@@ -213,6 +213,10 @@
           </div>
           <div class="bg-output">
             <div id="blueBgEditor" class="blue-bg-editor" hidden>
+              <div id="bgCanvasTabBar" class="bg-canvas-tab-bar" hidden>
+                <div id="bgCanvasTabs" class="bg-canvas-tabs" role="tablist" aria-label="画布标签页"></div>
+                <button id="bgAddTabButton" class="bg-canvas-tab-add" type="button" title="新建空白画布"><span class="bg-canvas-tab-add-symbol">＋</span><small>新建</small></button>
+              </div>
               <div id="blueBgStage" class="blue-bg-stage" tabindex="0" aria-label="美化 / 标注画布">
                 <canvas id="blueBgCanvas" width="2000" height="1083"></canvas>
                 <canvas id="bgAnnotationCanvas" class="bg-annotation-canvas" width="2000" height="1083" hidden></canvas>
@@ -338,6 +342,26 @@
                   </div>
                 </div>
               </div>
+              <div id="bgAnnotationPenControls" class="bg-annotation-control" hidden>
+                <label class="bg-effect-switch-row"><input id="bgAnnotationPenShadow" type="checkbox"> 阴影效果</label>
+                <span class="bg-effect-control-heading"><span>画笔粗细</span><strong id="bgAnnotationPenWidthValue">6 px</strong></span>
+                <input id="bgAnnotationPenWidth" type="range" min="2" max="40" value="6">
+                <span class="bg-effect-control-heading"><span>画笔颜色</span></span>
+                <div id="bgAnnotationPenColors" class="bg-annotation-color-grid" role="group" aria-label="画笔颜色">
+                  <button type="button" data-annotation-color-kind="pen" data-annotation-color="#ff5a52"><span style="--swatch:#ff5a52"></span><strong>默认</strong></button>
+                  <button type="button" data-annotation-color-kind="pen" data-annotation-color="#111111"><span style="--swatch:#111111"></span><strong>#111111</strong></button>
+                  <button type="button" data-annotation-color-kind="pen" data-annotation-color="#ffffff"><span style="--swatch:#ffffff"></span><strong>#FFFFFF</strong></button>
+                  <button type="button" data-annotation-color-kind="pen" data-annotation-color="#ff9500"><span style="--swatch:#ff9500"></span><strong>#FF9500</strong></button>
+                  <button type="button" data-annotation-color-kind="pen" data-annotation-color="#ffd60a"><span style="--swatch:#ffd60a"></span><strong>#FFD60A</strong></button>
+                  <button type="button" data-annotation-color-kind="pen" data-annotation-color="#34c759"><span style="--swatch:#34c759"></span><strong>#34C759</strong></button>
+                  <button type="button" data-annotation-color-kind="pen" data-annotation-color="#1677ff"><span style="--swatch:#1677ff"></span><strong>#1677FF</strong></button>
+                  <button type="button" data-annotation-color-kind="pen" data-annotation-color="#af52de"><span style="--swatch:#af52de"></span><strong>#AF52DE</strong></button>
+                  <div class="bg-annotation-custom-color">
+                    <button class="bg-annotation-custom-select" type="button" data-annotation-custom-select="pen"><span class="bg-annotation-color-preview" style="--swatch:#ff5a52"></span><strong>自定义</strong></button>
+                    <label class="bg-annotation-color-picker-trigger" title="设置自定义画笔颜色"><input id="bgAnnotationPenColor" type="color" value="#ff5a52" aria-label="设置自定义画笔颜色"></label>
+                  </div>
+                </div>
+              </div>
               <div id="bgAnnotationBlurControls" class="bg-annotation-control" hidden>
                 <label class="bg-effect-switch-row"><input id="bgAnnotationBlurShadow" type="checkbox"> 阴影效果</label>
                 <span class="bg-effect-control-heading"><span>模糊强度</span><strong id="bgAnnotationBlurStrengthValue">16 px</strong></span>
@@ -390,6 +414,7 @@
             <button id="bgBackgroundButton" type="button" aria-label="图片样式" title="图片样式 (B)" disabled><span class="tool-symbol tool-symbol-background"></span><small>图片样式</small></button>
             <button id="bgAddAnnotationNumber" type="button" aria-label="序号" title="序号 (N)" disabled><span class="tool-symbol tool-symbol-number"></span><small>序号</small></button>
             <button id="bgAddAnnotationMask" type="button" aria-label="遮挡" title="遮挡 (M)" disabled><span class="tool-symbol tool-symbol-mask"></span><small>遮挡</small></button>
+            <button id="bgAddAnnotationPen" type="button" aria-label="画笔" title="画笔 (P)" disabled><span class="tool-symbol tool-symbol-pen"></span><small>画笔</small></button>
             <button id="bgAddAnnotationBlur" type="button" aria-label="模糊" title="模糊 (F)" disabled><span class="tool-symbol tool-symbol-blur"></span><small>模糊</small></button>
             <button id="bgAddAnnotationMagnifier" type="button" aria-label="放大镜" title="放大镜 (G)" disabled><span class="tool-symbol tool-symbol-magnifier"></span><small>放大镜</small></button>
             <button id="bgDeleteSelected" class="annotation-delete" type="button" aria-label="删除所选" title="删除所选 (Delete)" disabled><span class="tool-symbol tool-symbol-delete"></span><small>删除</small></button>
@@ -473,6 +498,8 @@
             <button id="imageEditorRemoveMode" type="button" aria-label="区段删除" title="区段删除 (R)" disabled><span class="tool-symbol tool-symbol-remove-section"></span><small>删段</small></button>
             <button id="imageEditorCropMode" type="button" aria-label="画布裁切" title="画布裁切 (C)" disabled><span class="tool-symbol tool-symbol-crop"></span><small>裁切</small></button>
             <button id="imageEditorGradientMode" type="button" aria-label="渐变透明" title="渐变透明 (G)" disabled><span class="tool-symbol tool-symbol-gradient"></span><small>渐变</small></button>
+            <button id="imageEditorInpaintMode" type="button" aria-label="局部修复" title="局部修复 (E)" disabled><span class="tool-symbol tool-symbol-eraser"></span><small>修复</small></button>
+            <button id="imageEditorCoverMode" type="button" aria-label="智能覆盖" title="智能覆盖" disabled><span class="tool-symbol tool-symbol-cover"></span><small>覆盖</small></button>
             <div class="image-editor-more">
               <button id="imageEditorMoreButton" type="button" aria-label="更多工具" title="更多工具" aria-expanded="false" disabled><span class="tool-symbol tool-symbol-more"></span><small>更多</small></button>
               <div id="imageEditorMoreMenu" class="image-editor-more-menu" hidden>
@@ -484,7 +511,7 @@
             <button id="imageEditorUndo" type="button" aria-label="撤销" title="撤销 (Ctrl/⌘ Z)" disabled><span class="tool-symbol tool-symbol-undo"></span><small>撤销</small></button>
             <button id="imageEditorRedo" type="button" aria-label="重做" title="重做 (Ctrl Y / Ctrl/⌘ Shift Z)" disabled><span class="tool-symbol tool-symbol-redo"></span><small>重做</small></button>
           </div>
-        <div id="imageEditorOptions" class="image-editor-options" hidden>
+        <aside id="imageEditorInspector" class="image-editor-inspector is-disabled" aria-label="功能键扩展区">
           <div id="imageEditorCompositeControls" class="image-editor-composite-controls" hidden>
             <input id="imageEditorSecondFile" type="file" accept="image/*" hidden>
             <button id="imageEditorSecondFileButton" type="button">导入图 B</button>
@@ -502,7 +529,21 @@
             <label id="imageEditorBlendWidthField">融合宽度 <input id="imageEditorBlendWidth" type="range" min="20" max="600" value="160"></label>
             <button id="imageEditorApplyComposite" class="primary" type="button" disabled>应用合成</button>
           </div>
-        </div>
+          <div id="imageEditorInpaintControls" class="image-editor-composite-controls" hidden>
+            <label>修复半径 <strong id="imageEditorInpaintSizeValue">40 px</strong></label>
+            <input id="imageEditorInpaintSize" type="range" min="10" max="200" step="1" value="40">
+            <p class="image-editor-inspector-note">在画布上按住拖动，圆形区域内的内容会被周围像素自动填充修复。</p>
+          </div>
+          <div id="imageEditorCoverControls" class="image-editor-composite-controls" hidden>
+            <label>覆盖形状</label>
+            <div class="cover-shape-toggle">
+              <button type="button" data-cover-shape="rect">方形</button>
+              <button type="button" data-cover-shape="ellipse">圆形</button>
+            </div>
+            <p class="image-editor-inspector-note">在画布上拖动画出要遮盖的区域，点击 ✓ 确认后，区域会自动填充颜色以匹配周边画面。</p>
+          </div>
+          <p id="imageEditorInspectorHint" class="image-editor-inspector-hint">激活分隔、融合、局部修复或智能覆盖等工具后，在这里调节参数。</p>
+        </aside>
         <div id="imageEditorStage" class="image-editor-stage" tabindex="0" aria-label="高级编辑画布">
           <canvas id="imageEditorCanvas"></canvas>
           <div id="imageEditorSelectionOverlay" class="image-editor-selection-overlay" hidden>
@@ -649,6 +690,6 @@
 
   <div class="tool-version"><img src="./assets/toolbox-icon.png" alt="" aria-hidden="true">小编工具箱</div>
 
-  <script src="./app.js?v=20260813-borderless-transparent1"></script>
+  <script src="./app.js?v=20260823-export-cors-diagnosis"></script>
 </body>
 </html>

@@ -52,6 +52,7 @@ const BG_ANNOTATION_CUSTOM_COLORS = {
   mask: { key: "litu.annotationCustomColor.mask.v1", fallback: "#98b2c0", input: "#bgAnnotationMaskColor" },
   number: { key: "litu.annotationCustomColor.number.v1", fallback: "#ff5a52", input: "#bgAnnotationNumberColor" },
   magnifier: { key: "litu.annotationCustomColor.magnifier.v1", fallback: "#ff594b", input: "#bgAnnotationMagnifierColor" },
+  pen: { key: "litu.annotationCustomColor.pen.v1", fallback: "#ff5a52", input: "#bgAnnotationPenColor" },
 };
 const BG_ASPECTS = {
   default: { label: "默认", value: "default" },
@@ -79,7 +80,8 @@ const MACOS_WALLPAPERS = [
   { id: "macos-27", label: "Golden Gate", url: "./assets/wallpapers/macos-27-golden-gate.jpg", source: "Basic Apple Guy" },
 ];
 let marchingAntsOffset = 0;
-const blueBgState = {
+function createBgCanvasState() {
+  return {
   background: null,
   backgroundType: "lizhi",
   backgroundColor: BG_DEFAULT_COLOR,
@@ -107,7 +109,9 @@ const blueBgState = {
   inspectorMode: "background",
   toolMode: "background",
   snapGuides: { vertical: [], horizontal: [] },
-};
+  };
+}
+let blueBgState = createBgCanvasState();
 let bgMaterials = [];
 let bgSelectedMaterialIndex = -1;
 let bgSelectedMaterialIndices = [];
@@ -120,6 +124,127 @@ let bgContextMaterialIndex = -1;
 let bgMaterialStackSequence = 0;
 const bgRenderControllers = new WeakMap();
 const blueBgLayerSurfaceCache = new WeakMap();
+
+// —— 画布标签页：每个标签一份独立画布与标注状态，素材库全局共享 ——
+const BG_TAB_LIMIT = 7;
+const bgTabList = [];
+let activeBgTabId = null;
+let bgTabSequence = 0;
+
+function currentBgTab() {
+  return bgTabList.find(tab => tab.id === activeBgTabId) || null;
+}
+
+function bgTabTitle(tab) {
+  const namedLayer = tab.canvas.layers.find(layer => layer.fileName)?.fileName;
+  return tab.canvas.sourceName || namedLayer || `画布 ${bgTabList.indexOf(tab) + 1}`;
+}
+
+function createBgTab({ activate = true } = {}) {
+  if (bgTabList.length >= BG_TAB_LIMIT) {
+    blueBgStatus(`最多支持 ${BG_TAB_LIMIT} 个画布标签。`);
+    return null;
+  }
+  bgTabSequence += 1;
+  const tab = {
+    id: `bg-tab-${bgTabSequence}`,
+    canvas: createBgCanvasState(),
+    annotation: createAnnotationState("bg"),
+    history: [],
+    historyIndex: -1,
+  };
+  bgTabList.push(tab);
+  if (activate) switchBgTab(tab.id);
+  else renderBgTabs();
+  return tab;
+}
+
+function closeBgTab(tabId) {
+  const index = bgTabList.findIndex(tab => tab.id === tabId);
+  if (index < 0) return;
+  const wasActive = bgTabList[index].id === activeBgTabId;
+  bgTabList.splice(index, 1);
+  if (!bgTabList.length) {
+    activeBgTabId = null;
+    createBgTab();
+    return;
+  }
+  if (wasActive) {
+    const next = bgTabList[Math.min(index, bgTabList.length - 1)];
+    switchBgTab(next.id);
+    return;
+  }
+  renderBgTabs();
+}
+
+function switchBgTab(tabId) {
+  const target = bgTabList.find(tab => tab.id === tabId);
+  if (!target) return;
+  if (target.id === activeBgTabId) {
+    renderBgTabs();
+    return;
+  }
+  const previous = currentBgTab();
+  if (previous) {
+    previous.history = bgHistory;
+    previous.historyIndex = bgHistoryIndex;
+  }
+  activeBgTabId = target.id;
+  blueBgState = target.canvas;
+  bgAnnotationState = target.annotation;
+  bgHistory = target.history;
+  bgHistoryIndex = target.historyIndex;
+  annotationState = bgAnnotationState;
+  renderBgTabs();
+  $("#blueBgEditor").hidden = false;
+  $("#bgPreview").hidden = true;
+  ensureUnifiedBgBackground(blueBgState.layers[0]?.image || null)
+    .then(() => {
+      updateBlueBgControls();
+      renderBlueBgCanvas();
+      resetBlueBgZoom();
+      if (!blueBgState.layers.length) {
+        blueBgStatus("当前画布为空：点击左侧素材库图片加入，或导入新图片。");
+      }
+    })
+    .catch(err => blueBgStatus(err.message));
+}
+
+function renderBgTabs() {
+  const wrap = $("#bgCanvasTabs");
+  const bar = $("#bgCanvasTabBar");
+  if (!wrap || !bar) return;
+  bar.hidden = false;
+  wrap.innerHTML = "";
+  bgTabList.forEach(tab => {
+    const tabButton = document.createElement("div");
+    tabButton.className = `bg-canvas-tab${tab.id === activeBgTabId ? " active" : ""}`;
+    tabButton.dataset.bgTabId = tab.id;
+    tabButton.setAttribute("role", "tab");
+    tabButton.setAttribute("aria-selected", tab.id === activeBgTabId ? "true" : "false");
+    tabButton.setAttribute("aria-label", bgTabTitle(tab));
+    tabButton.title = bgTabTitle(tab);
+    const label = document.createElement("span");
+    label.className = "bg-canvas-tab-label";
+    label.textContent = bgTabTitle(tab);
+    tabButton.appendChild(label);
+    const closeButton = document.createElement("button");
+    closeButton.type = "button";
+    closeButton.className = "bg-canvas-tab-close";
+    closeButton.dataset.bgTabClose = tab.id;
+    closeButton.setAttribute("aria-label", `关闭 ${bgTabTitle(tab)}`);
+    closeButton.textContent = "×";
+    tabButton.appendChild(closeButton);
+    wrap.appendChild(tabButton);
+  });
+}
+
+function syncActiveBgTabTitle() {
+  if (!currentBgTab()) return;
+  renderBgTabs();
+}
+
+let bgAnnotationState = createAnnotationState("bg");
 const imageEditorState = {
   documentCanvas: document.createElement("canvas"),
   sourceName: "",
@@ -138,6 +263,8 @@ const imageEditorState = {
   secondImage: null,
   sourceBgMaterialIndex: null,
   sourceBgLayerId: null,
+  inpaintSize: 40,
+  coverShape: "rect",
 };
 function createAnnotationState(host = "annotation") {
   return {
@@ -155,6 +282,8 @@ function createAnnotationState(host = "annotation") {
   maskColor: "#98b2c0",
   maskRound: false,
   maskRoundRadius: 16,
+  penColor: "#ff5a52",
+  penWidth: 6,
   magnifierColor: ANNOTATION_MAGNIFIER_COLOR,
   magnifierWidth: ANNOTATION_MAGNIFIER_LINE_WIDTH,
   shadows: { number: false, mask: false, blur: false, magnifier: false },
@@ -172,7 +301,8 @@ function createAnnotationState(host = "annotation") {
   };
 }
 const nativeAnnotationState = createAnnotationState("annotation");
-const bgAnnotationState = createAnnotationState("bg");
+// bgAnnotationState 由画布标签页管理（见 bgTabList 处的 let 声明），
+// 每个标签页持有一份独立的标注状态。
 let annotationState = nativeAnnotationState;
 let completionAudioCtx = null;
 
@@ -255,23 +385,36 @@ function unionBounds(boundsList) {
 function syncCanvasSelectionOverlays(stage, canvas, primaryOverlay, selections) {
   if (!stage || !canvas || !primaryOverlay) return;
   const owner = primaryOverlay.id || primaryOverlay.dataset.selectionOwner || "selection";
-  $$(".multi-selection-overlay", stage)
-    .filter(overlay => overlay.dataset.selectionOwner === owner)
-    .forEach(overlay => overlay.remove());
+  const secondaryOverlays = $$(".multi-selection-overlay", stage)
+    .filter(overlay => overlay.dataset.selectionOwner === owner);
   if (!selections.length) {
     syncCanvasSelectionOverlay(stage, canvas, primaryOverlay, null);
+    secondaryOverlays.forEach(overlay => overlay.remove());
     return;
   }
+  const usedSecondaryOverlays = new Set();
   selections.forEach((selection, index) => {
-    const overlay = index === 0 ? primaryOverlay : primaryOverlay.cloneNode(true);
+    const selectionKey = String(selection.id ?? index);
+    const overlay = index === 0
+      ? primaryOverlay
+      : secondaryOverlays.find(candidate =>
+          !usedSecondaryOverlays.has(candidate) && candidate.dataset.selectionKey === selectionKey
+        ) || secondaryOverlays.find(candidate => !usedSecondaryOverlays.has(candidate)) || primaryOverlay.cloneNode(true);
     if (index > 0) {
-      overlay.removeAttribute("id");
-      overlay.classList.add("multi-selection-overlay");
-      overlay.dataset.selectionOwner = owner;
-      stage.appendChild(overlay);
+      if (!overlay.classList.contains("multi-selection-overlay")) {
+        overlay.removeAttribute("id");
+        overlay.classList.add("multi-selection-overlay");
+        overlay.dataset.selectionOwner = owner;
+        stage.appendChild(overlay);
+      }
+      overlay.dataset.selectionKey = selectionKey;
+      usedSecondaryOverlays.add(overlay);
     }
     syncCanvasSelectionOverlay(stage, canvas, overlay, selection.bounds);
   });
+  secondaryOverlays
+    .filter(overlay => !usedSecondaryOverlays.has(overlay))
+    .forEach(overlay => overlay.remove());
 }
 
 const selectionCursorByHandle = {
@@ -1414,10 +1557,27 @@ function blueBgGestureChange(event) {
 function loadImageSource(source) {
   return new Promise((resolve, reject) => {
     const image = new Image();
+    const crossOrigin = isCrossOriginImageSource(source);
+    // 远程图片必须在设置 src 前声明 CORS 模式，否则一旦绘入 Canvas，
+    // 浏览器会永久阻止 toBlob／toDataURL 导出。
+    if (crossOrigin) image.crossOrigin = "anonymous";
     image.onload = () => resolve(image);
-    image.onerror = () => reject(new Error("无法读取图片，请换一张重试。"));
+    image.onerror = () => reject(new Error(
+      crossOrigin
+        ? "远程图片未提供导出所需的跨域授权，请下载后重新导入该图片。"
+        : "无法读取图片，请换一张重试。"
+    ));
     image.src = source;
   });
+}
+
+function isCrossOriginImageSource(source) {
+  try {
+    const url = new URL(source, window.location.href);
+    return /^https?:$/.test(url.protocol) && url.origin !== window.location.origin;
+  } catch (error) {
+    return false;
+  }
 }
 
 function bgAspectRatioForMode(mode = blueBgState.aspectMode) {
@@ -1720,15 +1880,17 @@ function syncBgAnnotationSource(sourceCanvas = blueBgCanvas()) {
   snapshot.height = sourceCanvas.height;
   snapshot.getContext("2d").drawImage(sourceCanvas, 0, 0);
   bgAnnotationState.image = snapshot;
+  // 导出等场景传入的是临时合成画布，只更新快照，绝不触碰屏幕上的
+  // 标注层；重设画布尺寸会清空已绘制内容，导致导出后标注“消失”。
+  if (sourceCanvas !== blueBgCanvas()) return;
   const overlay = $("#bgAnnotationCanvas");
-  overlay.width = sourceCanvas.width;
-  overlay.height = sourceCanvas.height;
-  if (sourceCanvas === blueBgCanvas()) {
-    overlay.style.width = sourceCanvas.style.width;
-    overlay.style.height = sourceCanvas.style.height;
-    overlay.style.maxWidth = sourceCanvas.style.maxWidth;
-    overlay.style.maxHeight = sourceCanvas.style.maxHeight;
-  }
+  // 仅在尺寸真的变化时才重设尺寸，避免无谓清空标注层。
+  if (overlay.width !== sourceCanvas.width) overlay.width = sourceCanvas.width;
+  if (overlay.height !== sourceCanvas.height) overlay.height = sourceCanvas.height;
+  overlay.style.width = sourceCanvas.style.width;
+  overlay.style.height = sourceCanvas.style.height;
+  overlay.style.maxWidth = sourceCanvas.style.maxWidth;
+  overlay.style.maxHeight = sourceCanvas.style.maxHeight;
 }
 
 function clearBgAnnotationSelection() {
@@ -1769,6 +1931,42 @@ function activateBgAnnotationMode(mode) {
   setBgInspectorMode("annotation");
   setAnnotationMode(mode);
   renderBlueBgCanvas();
+}
+
+// 美化画布的画笔光标独立于系统鼠标：圆环直径始终对应实际笔触粗细。
+let bgAnnotationPenCursor = null;
+
+function ensureBgAnnotationPenCursor() {
+  if (bgAnnotationPenCursor) return bgAnnotationPenCursor;
+  const cursor = document.createElement("div");
+  cursor.className = "brush-cursor bg-annotation-pen-cursor";
+  cursor.hidden = true;
+  $("#blueBgStage").appendChild(cursor);
+  bgAnnotationPenCursor = cursor;
+  return cursor;
+}
+
+function updateBgAnnotationPenCursor(event) {
+  const cursor = ensureBgAnnotationPenCursor();
+  const canvas = $("#bgAnnotationCanvas");
+  const rect = canvas.getBoundingClientRect();
+  const active = blueBgState.toolMode === "annotation" &&
+    bgAnnotationState.mode === "pen";
+  const inside = event.clientX >= rect.left && event.clientX <= rect.right &&
+    event.clientY >= rect.top && event.clientY <= rect.bottom;
+  cursor.hidden = !active || !inside;
+  if (cursor.hidden) return;
+  const stage = $("#blueBgStage");
+  const stageRect = stage.getBoundingClientRect();
+  const diameter = Math.max(2, (bgAnnotationState.penWidth || 6) * rect.width / Math.max(1, canvas.width));
+  cursor.style.width = `${diameter}px`;
+  cursor.style.height = `${diameter}px`;
+  cursor.style.left = `${event.clientX - stageRect.left + stage.scrollLeft}px`;
+  cursor.style.top = `${event.clientY - stageRect.top + stage.scrollTop}px`;
+}
+
+function hideBgAnnotationPenCursor() {
+  if (bgAnnotationPenCursor) bgAnnotationPenCursor.hidden = true;
 }
 
 function selectedBlueBgLayer() {
@@ -2196,6 +2394,10 @@ function shiftBgAnnotationItem(item, offsetX, offsetY) {
     item.lensY += offsetY;
     return;
   }
+  if (item.type === "pen") {
+    item.points = (item.points || []).map(point => ({ x: point.x + offsetX, y: point.y + offsetY }));
+    return;
+  }
   item.x += offsetX;
   item.y += offsetY;
 }
@@ -2214,6 +2416,9 @@ function shiftBlueBgInteraction(offsetX, offsetY) {
   interaction.originals?.forEach(original => {
     original.x += offsetX;
     original.y += offsetY;
+  });
+  interaction.annotationOriginals?.forEach(original => {
+    shiftBgAnnotationItem(original, offsetX, offsetY);
   });
 }
 
@@ -2346,6 +2551,7 @@ async function addBlueBgFiles(fileList, reset = false) {
   }
   updateBlueBgControls();
   renderBlueBgCanvas();
+  syncActiveBgTabTitle();
   pushBgHistory();
   const ignored = files.length - accepted.length;
   blueBgStatus(
@@ -2530,7 +2736,7 @@ function blueBgPointerMove(event) {
   const layer = blueBgState.layers.find(candidate => candidate.id === interaction.id);
   if (!layer) return;
   const point = blueBgPointerPosition(event);
-  if (["move", "move-group"].includes(interaction.mode) && !interaction.moved) {
+  if (["move", "move-group", "move-combined"].includes(interaction.mode) && !interaction.moved) {
     const distance = Math.hypot(
       event.clientX - interaction.startClient.x,
       event.clientY - interaction.startClient.y
@@ -2540,7 +2746,26 @@ function blueBgPointerMove(event) {
     if (distance < 4) return;
     interaction.moved = true;
   }
-  if (interaction.mode === "move-group") {
+  if (interaction.mode === "move-combined") {
+    const dx = point.x - interaction.start.x;
+    const dy = point.y - interaction.start.y;
+    interaction.originals.forEach(original => {
+      const candidate = blueBgState.layers.find(item => item.id === original.id);
+      if (!candidate) return;
+      candidate.x = original.x + dx;
+      candidate.y = original.y + dy;
+      clampBlueBgLayer(candidate);
+    });
+    withAnnotationState(bgAnnotationState, () => {
+      interaction.annotationOriginals.forEach(original => {
+        const candidate = bgAnnotationState.items.find(item => item.id === original.id);
+        if (!candidate) return;
+        translateAnnotationItem(candidate, original, dx, dy);
+        clampAnnotationItem(candidate);
+      });
+    });
+    blueBgState.snapGuides = emptySnapGuides();
+  } else if (interaction.mode === "move-group") {
     const dx = point.x - interaction.start.x;
     const dy = point.y - interaction.start.y;
     interaction.originals.forEach(original => {
@@ -2659,12 +2884,20 @@ function blueBgPointerUp(event) {
   const snapped = blueBgState.snapGuides.vertical.length || blueBgState.snapGuides.horizontal.length;
   blueBgState.snapGuides = emptySnapGuides();
   renderBlueBgCanvas();
-  if (["move", "move-group"].includes(interaction.mode) && !interaction.moved) {
-    blueBgStatus(`已选择前景图 · 共 ${blueBgState.layers.length} 张图片`);
+  if (["move", "move-group", "move-combined"].includes(interaction.mode) && !interaction.moved) {
+    blueBgStatus(
+      interaction.mode === "move-combined"
+        ? `已保持 ${selectedBlueBgLayers().length} 张前景图和 ${withAnnotationState(bgAnnotationState, () => selectedAnnotationItems().length)} 个标注的组合选择。`
+        : `已选择前景图 · 共 ${blueBgState.layers.length} 张图片`
+    );
     return;
   }
   pushBgHistory();
-  blueBgStatus(`${snapped ? "已吸附到图像或画布参考线" : "已保存当前调整"} · 共 ${blueBgState.layers.length} 张图片`);
+  blueBgStatus(
+    interaction.mode === "move-combined"
+      ? `已统一移动 ${selectedBlueBgLayers().length} 张前景图和 ${withAnnotationState(bgAnnotationState, () => selectedAnnotationItems().length)} 个标注。`
+      : `${snapped ? "已吸附到图像或画布参考线" : "已保存当前调整"} · 共 ${blueBgState.layers.length} 张图片`
+  );
 }
 
 function bgAnnotationHitAtEvent(event) {
@@ -2694,6 +2927,45 @@ function blueBgLayerHitAtEvent(event) {
     [...blueBgState.layers].reverse().some(layer => blueBgPointInLayer(layer, point));
 }
 
+function startCombinedBgSelectionMove(event) {
+  const selectedLayers = selectedBlueBgLayers();
+  const selectedAnnotations = withAnnotationState(bgAnnotationState, () => selectedAnnotationItems());
+  if (!selectedLayers.length || !selectedAnnotations.length) return false;
+  const point = blueBgPointerPosition(event);
+  const hitsSelectedLayer = selectedLayers.some(layer => blueBgPointInLayer(layer, point));
+  const hitsSelectedAnnotation = withAnnotationState(bgAnnotationState, () =>
+    selectedAnnotations.some(item => pointInAnnotationItem(item, point))
+  );
+  if (!hitsSelectedLayer && !hitsSelectedAnnotation) return false;
+  // 点到任一对象的尺寸手柄时，继续走原有的单对象尺寸调整；只有拖动内容本体才组合移动。
+  const hitsLayerHandle = selectedLayers.some(layer => Boolean(blueBgHitHandle(layer, point)));
+  const hitsAnnotationHandle = withAnnotationState(bgAnnotationState, () =>
+    selectedAnnotations.some(item => Boolean(hitAnnotationHandle(item, point)))
+  );
+  if (hitsLayerHandle || hitsAnnotationHandle) return false;
+  blueBgState.toolMode = "move";
+  blueBgState.snapGuides = emptySnapGuides();
+  blueBgState.interaction = {
+    mode: "move-combined",
+    id: selectedLayers[0].id,
+    start: point,
+    startClient: { x: event.clientX, y: event.clientY },
+    moved: false,
+    originals: selectedLayers.map(layer => ({ id: layer.id, x: layer.x, y: layer.y })),
+    annotationOriginals: selectedAnnotations.map(item => ({
+      ...item,
+      ...(item.type === "pen" ? { points: (item.points || []).map(point => ({ ...point })) } : {}),
+    })),
+  };
+  $("#blueBgStage").setPointerCapture?.(event.pointerId);
+  $("#blueBgStage").focus();
+  setBgInspectorMode("effects");
+  updateBlueBgControls();
+  renderBlueBgCanvas();
+  event.preventDefault();
+  return true;
+}
+
 function blueBgStagePointerDown(event) {
   if (event.button > 0 || event.target.closest(".blue-bg-context-menu")) return;
   annotationState = bgAnnotationState;
@@ -2708,6 +2980,7 @@ function blueBgStagePointerDown(event) {
     event.preventDefault();
     return;
   }
+  if (!multiKey && startCombinedBgSelectionMove(event)) return;
   if (blueBgState.toolMode !== "annotation" && selectedBlueBgHandleAtEvent(event)) {
     blueBgState.toolMode = "move";
     setBgInspectorMode("effects");
@@ -2898,6 +3171,17 @@ function deleteBgMaterialCompletely(materialIndex = bgContextMaterialIndex) {
   const removedLayerIds = new Set(
     blueBgState.layers.filter(layer => layer.materialIndex === materialIndex).map(layer => layer.id)
   );
+  // 素材库被所有画布标签共享：删除素材时，其余标签页里引用该素材的
+  // 图层也要一并移除，避免 materialIndex 错位指向别的图片。
+  bgTabList.forEach(tab => {
+    if (tab.canvas === blueBgState) return;
+    tab.canvas.layers = tab.canvas.layers.filter(layer => layer.materialIndex !== materialIndex);
+    tab.canvas.layers.forEach(layer => {
+      if (Number.isInteger(layer.materialIndex) && layer.materialIndex > materialIndex) layer.materialIndex -= 1;
+    });
+    tab.canvas.selectedId = null;
+    tab.canvas.selectedIds = [];
+  });
   blueBgState.layers = blueBgState.layers.filter(layer => layer.materialIndex !== materialIndex);
   blueBgState.layers.forEach(layer => {
     if (Number.isInteger(layer.materialIndex) && layer.materialIndex > materialIndex) layer.materialIndex -= 1;
@@ -3056,6 +3340,7 @@ function deleteBlueBgLayer() {
   if (!count) return;
   openBgBackgroundDialog();
   pushBgHistory();
+  syncActiveBgTabTitle();
   blueBgStatus(`已移除 ${count} 张画布前景图，素材库保留并标记为未使用 · 共 ${blueBgState.layers.length} 张图片`);
 }
 
@@ -3072,6 +3357,7 @@ function deleteSelectedBgCanvasItems() {
   openBgBackgroundDialog();
   updateBlueBgControls();
   renderBlueBgCanvas();
+  syncActiveBgTabTitle();
   pushBgHistory();
   const parts = [];
   if (layerCount) parts.push(`${layerCount} 张前景图`);
@@ -3151,6 +3437,87 @@ function blueBgTransparentExportScale(bounds) {
   );
 }
 
+async function refreshCrossOriginBlueBgImages() {
+  const reloadIfRemote = async (image, source) => {
+    const resolvedSource = source || image?.currentSrc || image?.src;
+    if (!isCrossOriginImageSource(resolvedSource)) return image;
+    return loadImageSource(resolvedSource);
+  };
+  for (const layer of blueBgState.layers) {
+    const material = Number.isInteger(layer.materialIndex) ? bgMaterials[layer.materialIndex] : null;
+    layer.image = await reloadIfRemote(layer.image, material?.previewUrl || layer.image?.currentSrc || layer.image?.src);
+  }
+  blueBgState.backgroundImage = await reloadIfRemote(
+    blueBgState.backgroundImage,
+    blueBgState.backgroundImageUrl || blueBgState.backgroundImage?.currentSrc || blueBgState.backgroundImage?.src
+  );
+  blueBgState.headerImage = await reloadIfRemote(blueBgState.headerImage);
+  blueBgState.footerImage = await reloadIfRemote(blueBgState.footerImage);
+  blueBgState.background = blueBgState.backgroundImage;
+  renderBlueBgCanvas();
+}
+
+function blueBgExportImageSources() {
+  const sources = blueBgState.layers.map(layer => ({
+    label: `前景图“${layer.fileName || "未命名图片"}”`,
+    image: layer.image,
+  }));
+  if (["image", "wallpaper"].includes(blueBgState.backgroundType)) {
+    sources.push({
+      label: `背景图“${blueBgState.backgroundImageName || "未命名图片"}”`,
+      image: blueBgState.backgroundImage,
+    });
+  }
+  if (blueBgState.backgroundType === "lizhi") {
+    sources.push({ label: "荔枝背景页眉", image: blueBgState.headerImage });
+    sources.push({ label: "荔枝背景页脚", image: blueBgState.footerImage });
+  }
+  return sources.filter(source => source.image);
+}
+
+function assertBlueBgExportSourcesReadable() {
+  if (window.location.protocol === "file:") {
+    throw new Error("当前是直接打开的 file:// 页面。请用本地静态服务器打开项目，再导出。\n例如：python3 -m http.server 8080，然后访问 http://127.0.0.1:8080/");
+  }
+  const unreadable = [];
+  for (const source of blueBgExportImageSources()) {
+    const probe = document.createElement("canvas");
+    probe.width = 1;
+    probe.height = 1;
+    try {
+      const ctx = probe.getContext("2d", { willReadFrequently: true });
+      ctx.drawImage(source.image, 0, 0, 1, 1);
+      ctx.getImageData(0, 0, 1, 1);
+    } catch (error) {
+      unreadable.push(source.label);
+    }
+  }
+  if (unreadable.length) {
+    throw new Error(`以下图片不允许浏览器读取像素，不能导出：${unreadable.join("、")}。请下载后通过“导入图片”重新加入。`);
+  }
+  // 模糊标注会读取当前工作画布。即使原图地址已经不可追溯，
+  // 这里也能在真正合成前发现已经被污染的工作画布。
+  try {
+    const canvas = blueBgCanvas();
+    canvas.getContext("2d", { willReadFrequently: true }).getImageData(0, 0, 1, 1);
+  } catch (error) {
+    throw new Error("当前工作画布含有无法读取的旧图片数据。请重新导入该图片，或新建画布后再次导出。");
+  }
+}
+
+function canvasToPngBlob(canvas) {
+  return new Promise((resolve, reject) => {
+    try {
+      canvas.toBlob(blob => {
+        if (blob) resolve(blob);
+        else reject(new Error("浏览器未能生成 PNG 文件。"));
+      }, "image/png");
+    } catch (error) {
+      reject(error);
+    }
+  });
+}
+
 function composeTransparentBlueBgOutputCanvas() {
   const bounds = blueBgTransparentExportBounds();
   if (!bounds) return document.createElement("canvas");
@@ -3180,37 +3547,39 @@ function composeBlueBgOutputCanvas() {
   return output;
 }
 
-function confirmBlueBgRender() {
+async function confirmBlueBgRender() {
   if (!blueBgState.layers.length) {
     blueBgStatus("请至少添加一张图片。");
     return;
   }
-  const output = composeBlueBgOutputCanvas();
-  output.toBlob(blob => {
-    if (!blob) {
-      blueBgStatus("生成失败，请重试。");
-      return;
-    }
+  try {
+    await refreshCrossOriginBlueBgImages();
+    assertBlueBgExportSourcesReadable();
+    const output = composeBlueBgOutputCanvas();
+    const blob = await canvasToPngBlob(output);
     const filename = blueBgFilename();
     bgGeneratedResults = [{ blob, filename }];
     downloadBlob(blob, filename);
     updateBgExportState();
     blueBgStatus(`已导出 ${output.width} × ${output.height}px 图片。`);
-  }, "image/png");
+  } catch (error) {
+    blueBgStatus(`导出失败：${error.message || "请重试。"}`);
+  }
 }
 
-function sendBgToAnnotation() {
+async function sendBgToAnnotation() {
   if (!blueBgState.layers.length) return;
-  composeBlueBgOutputCanvas().toBlob(blob => {
-    if (!blob) {
-      blueBgStatus("生成失败，请重试。");
-      return;
-    }
+  try {
+    await refreshCrossOriginBlueBgImages();
+    assertBlueBgExportSourcesReadable();
+    const blob = await canvasToPngBlob(composeBlueBgOutputCanvas());
     const baseName = (blueBgState.sourceName || "image").replace(/\.[^.]+$/, "");
     const file = new File([blob], `${baseName}-小编工具箱.png`, { type: "image/png" });
     showTab("annotation");
     loadAnnotationImage(file);
-  }, "image/png");
+  } catch (error) {
+    blueBgStatus(`发送失败：${error.message || "请重试。"}`);
+  }
 }
 
 function toggleBlueBgMode() {
@@ -3290,17 +3659,20 @@ function setBgFiles(fileList) {
 async function importBgFiles(fileList) {
   const files = Array.from(fileList || []);
   if (!files.length) return;
-  if ($("#bgBlueMode").checked && blueBgState.layers.length) {
+  if ($("#bgBlueMode").checked) {
+    // 蓝底统一画布模式：素材库全局共享，导入的图片只加入当前标签页画布，
+    // 绝不整体重置素材库或其他标签页。
+    if (!currentBgTab()) createBgTab();
     const available = BLUE_BG_MAX_LAYERS - blueBgState.layers.length;
     const accepted = files.slice(0, Math.max(0, available));
-    bgMaterials.push(...accepted.map(file => ({
+    bgMaterials.push(...files.map(file => ({
       file,
       stackOrder: bgMaterialStackSequence++,
       previewUrl: URL.createObjectURL(file),
       scale: 90,
       shadow: true,
       round: true,
-      unused: false,
+      unused: !accepted.includes(file),
       cornerRadius: SYSTEM_CORNER_RADIUS,
       cornerAuto: true,
       outputBlob: null,
@@ -3312,7 +3684,15 @@ async function importBgFiles(fileList) {
       renderTimer: null,
     })));
     await ensureUnifiedBgBackground(blueBgState.layers[0]?.image || null);
-    await addBlueBgFiles(accepted);
+    if (accepted.length) {
+      await addBlueBgFiles(accepted);
+    } else {
+      blueBgStatus(
+        `当前画布最多支持 ${BLUE_BG_MAX_LAYERS} 张图片，新导入的 ${files.length} 张已存入素材库。`
+      );
+    }
+    renderBgMaterialList();
+    updateBgExportState();
     return;
   }
   setBgFiles(files);
@@ -3880,6 +4260,8 @@ function updateImageEditorControls() {
   [
     "#imageEditorMoveMode",
     "#imageEditorRemoveMode",
+    "#imageEditorInpaintMode",
+    "#imageEditorCoverMode",
     "#imageEditorCropMode",
     "#imageEditorGradientMode",
     "#imageEditorMoreButton",
@@ -3894,13 +4276,25 @@ function updateImageEditorControls() {
   $("#imageEditorRedo").disabled = !hasImage || imageEditorState.historyIndex >= imageEditorState.history.length - 1;
   $("#imageEditorMoveMode").classList.toggle("active", imageEditorState.mode === "view");
   $("#imageEditorRemoveMode").classList.toggle("active", imageEditorState.mode === "remove");
+  $("#imageEditorInpaintMode").classList.toggle("active", imageEditorState.mode === "inpaint");
+  $("#imageEditorCoverMode").classList.toggle("active", imageEditorState.mode === "cover");
   $("#imageEditorCropMode").classList.toggle("active", imageEditorState.mode === "crop");
   $("#imageEditorGradientMode").classList.toggle("active", imageEditorState.mode === "gradient");
   $("#imageEditorSplitMode").classList.toggle("active", imageEditorState.mode === "split");
   $("#imageEditorBlendMode").classList.toggle("active", imageEditorState.mode === "blend");
   $("#imageEditorMoreButton").classList.toggle("active", ["split", "blend"].includes(imageEditorState.mode));
-  $("#imageEditorCompositeControls").hidden = !["split", "blend"].includes(imageEditorState.mode);
-  $("#imageEditorOptions").hidden = !["split", "blend"].includes(imageEditorState.mode);
+  const compositeActive = ["split", "blend"].includes(imageEditorState.mode);
+  const inpaintActive = imageEditorState.mode === "inpaint";
+  const coverActive = imageEditorState.mode === "cover";
+  const inspector = $("#imageEditorInspector");
+  $("#imageEditorCompositeControls").hidden = !compositeActive;
+  $("#imageEditorInpaintControls").hidden = !inpaintActive;
+  $("#imageEditorCoverControls").hidden = !coverActive;
+  $("#imageEditorInspectorHint").hidden = compositeActive || inpaintActive || coverActive;
+  inspector.classList.toggle("is-disabled", !compositeActive && !inpaintActive && !coverActive);
+  $$("#imageEditorCoverControls [data-cover-shape]").forEach(button => {
+    button.classList.toggle("active", button.dataset.coverShape === imageEditorState.coverShape);
+  });
   $("#imageEditorBlendWidthField").hidden = imageEditorState.mode !== "blend";
   $("#imageEditorApplyComposite").disabled = !imageEditorState.secondImage;
   $("#imageEditorCanvasZoom").disabled = !hasImage;
@@ -4001,6 +4395,23 @@ function drawImageEditorSelection(ctx) {
     ctx.moveTo(polygon[0].x, polygon[0].y);
     polygon.slice(1).forEach(point => ctx.lineTo(point.x, point.y));
     ctx.closePath();
+    ctx.fill();
+  } else if (imageEditorState.mode === "cover" && overlap) {
+    ctx.fillStyle = "rgba(22, 119, 255, .18)";
+    ctx.beginPath();
+    if (imageEditorState.coverShape === "ellipse") {
+      ctx.ellipse(
+        overlap.x + overlap.width / 2,
+        overlap.y + overlap.height / 2,
+        Math.max(1, overlap.width / 2),
+        Math.max(1, overlap.height / 2),
+        0,
+        0,
+        Math.PI * 2
+      );
+    } else {
+      ctx.rect(overlap.x, overlap.y, overlap.width, overlap.height);
+    }
     ctx.fill();
   } else if (imageEditorState.mode === "crop") {
     const canvas = imageEditorState.documentCanvas;
@@ -4186,6 +4597,278 @@ function syncImageEditorOverlays() {
   renderImageEditorSnapGuides();
 }
 
+// —— 局部修复（圆形笔刷 + 周边像素填充）——
+let imageEditorInpaintCursor = null;
+let imageEditorInpaintClient = null;
+
+function ensureImageEditorInpaintCursor() {
+  if (imageEditorInpaintCursor) return imageEditorInpaintCursor;
+  const cursor = document.createElement("div");
+  cursor.className = "brush-cursor";
+  cursor.hidden = true;
+  $("#imageEditorStage").appendChild(cursor);
+  imageEditorInpaintCursor = cursor;
+  return cursor;
+}
+
+function imageEditorInpaintDisplaySize() {
+  return Math.max(10, imageEditorState.inpaintSize);
+}
+
+function updateImageEditorInpaintCursor(clientX, clientY) {
+  const cursor = ensureImageEditorInpaintCursor();
+  imageEditorInpaintClient = { x: clientX, y: clientY };
+  if (!imageEditorState.hasImage || imageEditorState.mode !== "inpaint") {
+    cursor.hidden = true;
+    return cursor;
+  }
+  const stage = $("#imageEditorStage");
+  const stageRect = stage.getBoundingClientRect();
+  const inside = clientX >= stageRect.left && clientX <= stageRect.right &&
+    clientY >= stageRect.top && clientY <= stageRect.bottom;
+  cursor.hidden = !inside;
+  if (!inside) return cursor;
+  const size = imageEditorInpaintDisplaySize();
+  cursor.style.width = `${size}px`;
+  cursor.style.height = `${size}px`;
+  cursor.style.left = `${clientX - stageRect.left + stage.scrollLeft}px`;
+  cursor.style.top = `${clientY - stageRect.top + stage.scrollTop}px`;
+  return cursor;
+}
+
+function refreshImageEditorInpaintCursor() {
+  if (imageEditorInpaintClient &&
+      imageEditorState.hasImage &&
+      imageEditorState.mode === "inpaint") {
+    updateImageEditorInpaintCursor(imageEditorInpaintClient.x, imageEditorInpaintClient.y);
+  }
+}
+
+function hideImageEditorInpaintCursor() {
+  imageEditorInpaintClient = null;
+  if (imageEditorInpaintCursor) imageEditorInpaintCursor.hidden = true;
+}
+
+function previewInpaintCircle(cx, cy) {
+  // 拖动过程中的快速预览：沿径向取边界像素直接覆盖，保证手感流畅。
+  // 松手后会对整条笔画重新执行一次高质量扩散填充。
+  const canvas = imageEditorState.documentCanvas;
+  const radius = Math.max(1, imageEditorState.inpaintSize / 2 / Math.max(0.01, imageEditorState.zoom));
+  const left = Math.max(0, Math.floor(cx - radius));
+  const top = Math.max(0, Math.floor(cy - radius));
+  const right = Math.min(canvas.width, Math.ceil(cx + radius));
+  const bottom = Math.min(canvas.height, Math.ceil(cy + radius));
+  const w = right - left;
+  const h = bottom - top;
+  if (w <= 0 || h <= 0) return;
+  const ctx = canvas.getContext("2d");
+  const imageData = ctx.getImageData(left, top, w, h);
+  const data = imageData.data;
+  const cx0 = cx - left;
+  const cy0 = cy - top;
+  const r2 = radius * radius;
+  const sampleRadius = Math.ceil(radius * 1.05) + 2;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const dx = x - cx0;
+      const dy = y - cy0;
+      if (dx * dx + dy * dy > r2) continue;
+      const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+      const stepX = dx / dist;
+      const stepY = dy / dist;
+      let sx = cx0 + dx;
+      let sy = cy0 + dy;
+      let foundPixel = null;
+      for (let r = Math.ceil(dist); r <= sampleRadius; r++) {
+        sx += stepX;
+        sy += stepY;
+        const px = Math.round(sx);
+        const py = Math.round(sy);
+        if (px < 0 || px >= w || py < 0 || py >= h) continue;
+        const pdx = px - cx0;
+        const pdy = py - cy0;
+        if (pdx * pdx + pdy * pdy > r2) {
+          const idx = (py * w + px) * 4;
+          foundPixel = [data[idx], data[idx + 1], data[idx + 2], data[idx + 3]];
+          break;
+        }
+      }
+      if (foundPixel) {
+        const idx = (y * w + x) * 4;
+        data[idx] = foundPixel[0];
+        data[idx + 1] = foundPixel[1];
+        data[idx + 2] = foundPixel[2];
+        data[idx + 3] = foundPixel[3];
+      }
+    }
+  }
+  ctx.putImageData(imageData, left, top);
+}
+
+// 高质量扩散填充：把 mask 标记的像素视为未知，从边界向内做多源 BFS 分层
+// 初始化，再做若干轮 Gauss-Seidel 平滑。等价于求 Laplace 方程的调和解：
+// 纯色背景完美还原，线性渐变天然还原，粗笔画大区域也能从四周均匀收敛。
+function runDiffusionInpaint(data, mask, w, h) {
+  const total = w * h;
+  const filled = new Uint8Array(total);
+  let unknownCount = 0;
+  for (let i = 0; i < total; i++) {
+    if (mask[i]) unknownCount++;
+    else filled[i] = 1;
+  }
+  if (!unknownCount) return;
+  // 迭代次数随区域大小自适应，超大区域也能在可接受时间内完成。
+  const smoothIterations = unknownCount > 2500000 ? 3 : unknownCount > 900000 ? 6 : 14;
+
+  // —— 多源 BFS：从与已知像素相邻的未知像素开始，逐层向内初始化 ——
+  let frontier = [];
+  for (let i = 0; i < total; i++) {
+    if (!mask[i]) continue;
+    const x = i % w;
+    if ((x > 0 && !mask[i - 1]) || (x < w - 1 && !mask[i + 1]) ||
+        (i >= w && !mask[i - w]) || (i < total - w && !mask[i + w])) {
+      frontier.push(i);
+    }
+  }
+  const queued = new Uint8Array(total);
+  while (frontier.length) {
+    for (const i of frontier) {
+      const x = i % w;
+      let r = 0, g = 0, b = 0, a = 0, n = 0;
+      if (x > 0 && filled[i - 1]) { const j = (i - 1) * 4; r += data[j]; g += data[j + 1]; b += data[j + 2]; a += data[j + 3]; n++; }
+      if (x < w - 1 && filled[i + 1]) { const j = (i + 1) * 4; r += data[j]; g += data[j + 1]; b += data[j + 2]; a += data[j + 3]; n++; }
+      if (i >= w && filled[i - w]) { const j = (i - w) * 4; r += data[j]; g += data[j + 1]; b += data[j + 2]; a += data[j + 3]; n++; }
+      if (i < total - w && filled[i + w]) { const j = (i + w) * 4; r += data[j]; g += data[j + 1]; b += data[j + 2]; a += data[j + 3]; n++; }
+      if (n) {
+        const j = i * 4;
+        data[j] = r / n;
+        data[j + 1] = g / n;
+        data[j + 2] = b / n;
+        data[j + 3] = a / n;
+      }
+    }
+    for (const i of frontier) filled[i] = 1;
+    const next = [];
+    for (const i of frontier) {
+      const x = i % w;
+      if (x > 0 && mask[i - 1] && !filled[i - 1] && !queued[i - 1]) { queued[i - 1] = 1; next.push(i - 1); }
+      if (x < w - 1 && mask[i + 1] && !filled[i + 1] && !queued[i + 1]) { queued[i + 1] = 1; next.push(i + 1); }
+      if (i >= w && mask[i - w] && !filled[i - w] && !queued[i - w]) { queued[i - w] = 1; next.push(i - w); }
+      if (i < total - w && mask[i + w] && !filled[i + w] && !queued[i + w]) { queued[i + w] = 1; next.push(i + w); }
+    }
+    frontier = next;
+  }
+
+  // —— 全局 Gauss-Seidel 平滑：让渐变过渡更顺滑、消除分层痕迹 ——
+  for (let iter = 0; iter < smoothIterations; iter++) {
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const i = y * w + x;
+        if (!mask[i]) continue;
+        let r = 0, g = 0, b = 0, a = 0, n = 0;
+        if (x > 0) { const j = (i - 1) * 4; r += data[j]; g += data[j + 1]; b += data[j + 2]; a += data[j + 3]; n++; }
+        if (x < w - 1) { const j = (i + 1) * 4; r += data[j]; g += data[j + 1]; b += data[j + 2]; a += data[j + 3]; n++; }
+        if (y > 0) { const j = (i - w) * 4; r += data[j]; g += data[j + 1]; b += data[j + 2]; a += data[j + 3]; n++; }
+        if (y < h - 1) { const j = (i + w) * 4; r += data[j]; g += data[j + 1]; b += data[j + 2]; a += data[j + 3]; n++; }
+        if (n) {
+          const j = i * 4;
+          data[j] = r / n;
+          data[j + 1] = g / n;
+          data[j + 2] = b / n;
+          data[j + 3] = a / n;
+        }
+      }
+    }
+  }
+}
+
+function inpaintImageEditorRegion(circles) {
+  // 对一组圆形区域（笔画覆盖范围）做并集 mask，然后执行扩散填充。
+  const canvas = imageEditorState.documentCanvas;
+  if (!circles?.length) return false;
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  circles.forEach(circle => {
+    minX = Math.min(minX, circle.x - circle.r);
+    minY = Math.min(minY, circle.y - circle.r);
+    maxX = Math.max(maxX, circle.x + circle.r);
+    maxY = Math.max(maxY, circle.y + circle.r);
+  });
+  const left = Math.max(0, Math.floor(minX));
+  const top = Math.max(0, Math.floor(minY));
+  const right = Math.min(canvas.width, Math.ceil(maxX));
+  const bottom = Math.min(canvas.height, Math.ceil(maxY));
+  const w = right - left;
+  const h = bottom - top;
+  if (w <= 0 || h <= 0) return false;
+  const ctx = canvas.getContext("2d");
+  const imageData = ctx.getImageData(left, top, w, h);
+  const mask = new Uint8Array(w * h);
+  circles.forEach(circle => {
+    const cx = circle.x - left;
+    const cy = circle.y - top;
+    const r2 = circle.r * circle.r;
+    const y0 = Math.max(0, Math.floor(cy - circle.r));
+    const y1 = Math.min(h - 1, Math.ceil(cy + circle.r));
+    const x0 = Math.max(0, Math.floor(cx - circle.r));
+    const x1 = Math.min(w - 1, Math.ceil(cx + circle.r));
+    for (let y = y0; y <= y1; y++) {
+      const dy = y - cy;
+      for (let x = x0; x <= x1; x++) {
+        const dx = x - cx;
+        if (dx * dx + dy * dy <= r2) mask[y * w + x] = 1;
+      }
+    }
+  });
+  runDiffusionInpaint(imageData.data, mask, w, h);
+  ctx.putImageData(imageData, left, top);
+  return true;
+}
+
+function applyCoverFill(bounds) {
+  // 智能覆盖：对矩形/椭圆形选区执行扩散填充，颜色自动匹配周边画面。
+  if (!bounds) return false;
+  const canvas = imageEditorState.documentCanvas;
+  const x = Math.round(bounds.x);
+  const y = Math.round(bounds.y);
+  const w = Math.round(bounds.width);
+  const h = Math.round(bounds.height);
+  if (w < 2 || h < 2) return false;
+  const ctx = canvas.getContext("2d");
+  const imageData = ctx.getImageData(x, y, w, h);
+  const mask = new Uint8Array(w * h);
+  if (imageEditorState.coverShape === "ellipse") {
+    const cx = w / 2;
+    const cy = h / 2;
+    const rx = Math.max(1, w / 2);
+    const ry = Math.max(1, h / 2);
+    for (let py = 0; py < h; py++) {
+      const ny = (py + 0.5 - cy) / ry;
+      for (let px = 0; px < w; px++) {
+        const nx = (px + 0.5 - cx) / rx;
+        if (nx * nx + ny * ny <= 1) mask[py * w + px] = 1;
+      }
+    }
+  } else {
+    mask.fill(1);
+  }
+  runDiffusionInpaint(imageData.data, mask, w, h);
+  ctx.putImageData(imageData, x, y);
+  return true;
+}
+
+function inpaintImageEditorSegment(from, to, strokes) {
+  const radius = Math.max(1, imageEditorState.inpaintSize / 2 / Math.max(0.01, imageEditorState.zoom));
+  const distance = Math.hypot(to.x - from.x, to.y - from.y);
+  const steps = Math.max(1, Math.ceil(distance / Math.max(1, radius / 3)));
+  for (let index = 0; index <= steps; index++) {
+    const ratio = index / steps;
+    const x = from.x + (to.x - from.x) * ratio;
+    const y = from.y + (to.y - from.y) * ratio;
+    previewInpaintCircle(x, y);
+    strokes?.push({ x, y, r: radius });
+  }
+}
+
 function drawImageCover(ctx, image, width, height) {
   const scale = Math.max(width / image.width, height / image.height);
   const drawWidth = image.width * scale;
@@ -4268,7 +4951,10 @@ function applyImageEditorZoom(zoom) {
   const zoomPercent = Math.round(imageEditorState.zoom * 100);
   $("#imageEditorCanvasZoom").value = String(zoomPercent);
   $("#imageEditorCanvasZoomValue").textContent = `${zoomPercent}%`;
-  requestAnimationFrame(syncImageEditorOverlays);
+  requestAnimationFrame(() => {
+    syncImageEditorOverlays();
+    refreshImageEditorInpaintCursor();
+  });
 }
 
 function resetImageEditorZoom() {
@@ -4341,20 +5027,25 @@ function setImageEditorMode(mode) {
   imageEditorState.interaction = null;
   imageEditorState.gradient = null;
   imageEditorState.snapGuides = emptySnapGuides();
-  $("#imageEditorStage").style.cursor = "";
+  $("#imageEditorStage").style.cursor = mode === "inpaint" ? "none" : "";
+  if (mode !== "inpaint") hideImageEditorInpaintCursor();
   renderImageEditorCanvas();
   updateImageEditorControls();
   const message = mode === "remove"
     ? "区段删除：框选后拖动短边可斜切删除区域；接近矩形时会自动吸附。"
     : mode === "crop"
       ? "画布裁切：拖动画出要保留的画面范围，再点击“应用所选区域”。"
-      : mode === "split"
-        ? "线条分隔：导入图 B，然后调节分隔线位置、角度和样式。"
-      : mode === "blend"
-          ? "图片融合：导入图 B，然后调节交汇位置、角度和融合宽度。"
-        : mode === "gradient"
-          ? "渐变：从全透明的起点拖向完全不透明的终点；按住 Shift 可吸附到 45° 倍数角度。"
-      : "查看模式：按 C 可快速进入画布裁切。";
+      : mode === "inpaint"
+        ? "局部修复：按住拖动即可用周围像素自动填充修复圆形区域内的内容，修复半径可在右侧扩展区调节。"
+        : mode === "cover"
+          ? "智能覆盖：拖动画出方形或圆形区域，点击 ✓ 确认后自动填充颜色遮盖原有内容。"
+          : mode === "split"
+          ? "线条分隔：导入图 B，然后调节分隔线位置、角度和样式。"
+        : mode === "blend"
+            ? "图片融合：导入图 B，然后调节交汇位置、角度和融合宽度。"
+          : mode === "gradient"
+            ? "渐变：从全透明的起点拖向完全不透明的终点；按住 Shift 可吸附到 45° 倍数角度。"
+        : "查看模式：按 C 可快速进入画布裁切。";
   imageEditorStatus(message);
   $("#imageEditorStage").focus();
 }
@@ -4475,7 +5166,15 @@ function imageEditorPointerDown(event) {
       imageEditorState.gradient = { start: point, end: point };
       imageEditorState.interaction = { mode: "gradient" };
     }
-  } else if (["remove", "crop"].includes(imageEditorState.mode)) {
+  } else if (imageEditorState.mode === "inpaint") {
+    const radius = Math.max(1, imageEditorState.inpaintSize / 2 / Math.max(0.01, imageEditorState.zoom));
+    previewInpaintCircle(point.x, point.y);
+    imageEditorState.interaction = {
+      mode: "inpaint-stroke",
+      lastPoint: point,
+      strokes: [{ x: point.x, y: point.y, r: radius }],
+    };
+  } else if (["remove", "crop", "cover"].includes(imageEditorState.mode)) {
     const handle = event.target.closest("[data-selection-handle]")?.dataset.selectionHandle;
     if (handle && imageEditorState.selection) {
       const horizontalRemoval = imageEditorState.mode === "remove" &&
@@ -4584,17 +5283,27 @@ function shearImageEditorSelection(interaction, point) {
 }
 
 function imageEditorPointerMove(event) {
+  updateImageEditorInpaintCursor(event.clientX, event.clientY);
   if (!imageEditorState.interaction) {
     const selection = imageEditorState.selection;
-    if (selection && ["remove", "crop"].includes(imageEditorState.mode)) {
+    if (selection && ["remove", "crop", "cover"].includes(imageEditorState.mode)) {
       const point = imageEditorPointerPosition(event);
       const inside = pointInImageEditorSelection(selection, point);
       $("#imageEditorStage").style.cursor = inside ? "move" : "";
+    } else if (imageEditorState.mode === "inpaint") {
+      $("#imageEditorStage").style.cursor = "none";
     }
     return;
   }
   const point = imageEditorPointerPosition(event);
   const interaction = imageEditorState.interaction;
+  if (interaction.mode === "inpaint-stroke") {
+    inpaintImageEditorSegment(interaction.lastPoint, point, interaction.strokes);
+    interaction.lastPoint = point;
+    renderImageEditorCanvas();
+    event.preventDefault();
+    return;
+  }
   if (interaction.mode === "gradient") {
     imageEditorState.gradient.end = snapGradientPoint(
       imageEditorState.gradient.start,
@@ -4651,6 +5360,17 @@ function imageEditorPointerUp(event) {
   const interaction = imageEditorState.interaction;
   imageEditorState.interaction = null;
   $("#imageEditorStage").releasePointerCapture?.(event.pointerId);
+  if (interaction.mode === "inpaint-stroke") {
+    if (interaction.strokes?.length) {
+      inpaintImageEditorRegion(interaction.strokes);
+    }
+    pushImageEditorHistory();
+    renderImageEditorCanvas();
+    updateImageEditorControls();
+    imageEditorStatus(`已完成局部修复 · 半径 ${imageEditorState.inpaintSize}px，颜色已按周边画面自然填充，可用撤销恢复。`);
+    event.preventDefault();
+    return;
+  }
   if (interaction.mode === "gradient" || interaction.mode === "gradient-adjust") {
     const gradient = imageEditorState.gradient;
     if (!gradient || Math.hypot(gradient.end.x - gradient.start.x, gradient.end.y - gradient.start.y) < 3) {
@@ -4741,6 +5461,20 @@ function applyImageEditorSelection() {
   const selection = imageEditorState.selection;
   const source = imageEditorState.documentCanvas;
   if (!selection || !imageEditorState.hasImage) return;
+  if (imageEditorState.mode === "cover") {
+    const overlap = intersectImageEditorSelection(selection);
+    if (!overlap) return;
+    const filled = applyCoverFill(overlap);
+    if (!filled) return;
+    imageEditorState.selection = null;
+    pushImageEditorHistory();
+    renderImageEditorCanvas();
+    updateImageEditorControls();
+    imageEditorStatus(
+      `智能覆盖完成 · ${imageEditorState.coverShape === "ellipse" ? "圆形" : "方形"}区域已按周边画面自动填充，可用撤销恢复。`
+    );
+    return;
+  }
   let result = document.createElement("canvas");
   if (imageEditorState.mode === "crop") {
     const x = Math.round(selection.x);
@@ -5102,7 +5836,7 @@ function updateBgAnnotationControls() {
   const selectedItems = selectedAnnotationItems();
   const selected = selectedItems.length === 1 ? selectedItems[0] : null;
   const annotationActive = blueBgState.toolMode === "annotation";
-  const creationType = ["mask", "blur", "number", "magnifier"].includes(annotationState.mode)
+  const creationType = ["mask", "blur", "number", "magnifier", "pen"].includes(annotationState.mode)
     ? annotationState.mode
     : null;
   const displayType = selected?.type || (annotationActive ? creationType : null);
@@ -5111,6 +5845,7 @@ function updateBgAnnotationControls() {
     ["#bgAddAnnotationMask", "mask"],
     ["#bgAddAnnotationBlur", "blur"],
     ["#bgAddAnnotationMagnifier", "magnifier"],
+    ["#bgAddAnnotationPen", "pen"],
   ].forEach(([selector, mode]) => {
     const button = $(selector);
     button.disabled = !hasImage;
@@ -5129,10 +5864,12 @@ function updateBgAnnotationControls() {
   const blurControls = $("#bgAnnotationBlurControls");
   const numberControls = $("#bgAnnotationNumberControls");
   const magnifierControls = $("#bgAnnotationMagnifierControls");
+  const penControls = $("#bgAnnotationPenControls");
   maskControls.hidden = displayType !== "mask";
   blurControls.hidden = displayType !== "blur";
   numberControls.hidden = displayType !== "number";
   magnifierControls.hidden = displayType !== "magnifier";
+  penControls.hidden = displayType !== "pen";
   const maskColor = selected?.type === "mask"
     ? selected.color || "#98b2c0"
     : annotationState.maskColor || "#98b2c0";
@@ -5175,6 +5912,16 @@ function updateBgAnnotationControls() {
       : Boolean(annotationState.shadows.magnifier);
     syncBgAnnotationColorTiles("magnifier", color);
   }
+  if (displayType === "pen") {
+    const color = selected?.type === "pen" ? selected.color : annotationState.penColor;
+    const width = selected?.type === "pen" ? Number(selected.lineWidth) || 6 : annotationState.penWidth || 6;
+    $("#bgAnnotationPenWidth").value = String(width);
+    $("#bgAnnotationPenWidthValue").textContent = `${width} px`;
+    $("#bgAnnotationPenShadow").checked = selected?.type === "pen"
+      ? Boolean(selected.shadow)
+      : Boolean(annotationState.shadows.pen);
+    syncBgAnnotationColorTiles("pen", color);
+  }
   $("#bgDeleteSelected").disabled = !selectedItems.length && !selectedBlueBgLayers().length;
 }
 
@@ -5189,6 +5936,7 @@ function syncBgAnnotationColorTiles(kind, color) {
     mask: "#bgAnnotationMaskColor",
     number: "#bgAnnotationNumberColor",
     magnifier: "#bgAnnotationMagnifierColor",
+    pen: "#bgAnnotationPenColor",
   }[kind];
   const custom = $(inputId)?.closest(".bg-annotation-custom-color");
   if (custom) {
@@ -5237,6 +5985,25 @@ function annotationStatusText(message) {
   else $("#annotationStatus").textContent = message;
 }
 
+function penStrokeBounds(item) {
+  const points = item.points || [];
+  if (!points.length) return { x: 0, y: 0, width: 0, height: 0 };
+  let left = Infinity, top = Infinity, right = -Infinity, bottom = -Infinity;
+  points.forEach(point => {
+    left = Math.min(left, point.x);
+    top = Math.min(top, point.y);
+    right = Math.max(right, point.x);
+    bottom = Math.max(bottom, point.y);
+  });
+  const halfWidth = (Number(item.lineWidth) || 6) / 2;
+  return {
+    x: left - halfWidth,
+    y: top - halfWidth,
+    width: right - left + halfWidth * 2,
+    height: bottom - top + halfWidth * 2,
+  };
+}
+
 function annotationItemBounds(item) {
   if (item.type === "number") {
     const size = annotationNumberSize(item);
@@ -5265,6 +6032,9 @@ function annotationItemBounds(item) {
       magnifierVisualBounds(item, "lens").y + magnifierVisualBounds(item, "lens").height
     );
     return expandAnnotationBoundsForShadow(item, { x: left, y: top, width: right - left, height: bottom - top });
+  }
+  if (item.type === "pen") {
+    return expandAnnotationBoundsForShadow(item, penStrokeBounds(item));
   }
   return expandAnnotationBoundsForShadow(item, { x: item.x, y: item.y, width: item.width, height: item.height });
 }
@@ -5449,6 +6219,37 @@ function drawAnnotationItemContent(ctx, item, includeSelection = false) {
     ctx.restore();
     return;
   }
+  if (item.type === "pen") {
+    const points = item.points || [];
+    if (points.length < 2) {
+      const only = points[0];
+      if (!only) return;
+      ctx.save();
+      ctx.fillStyle = item.color || "#ff5a52";
+      ctx.beginPath();
+      ctx.arc(only.x, only.y, Math.max(1, item.lineWidth / 2), 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+      return;
+    }
+    ctx.save();
+    ctx.strokeStyle = item.color || "#ff5a52";
+    ctx.lineWidth = item.lineWidth;
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    ctx.beginPath();
+    ctx.moveTo(points[0].x, points[0].y);
+    for (let index = 1; index < points.length; index++) {
+      ctx.lineTo(points[index].x, points[index].y);
+    }
+    if (points.length === 2) {
+      // 两点时补一段极短的重合路径，保证单击拖出的短线也有圆头。
+      ctx.lineTo(points[1].x + 0.01, points[1].y + 0.01);
+    }
+    ctx.stroke();
+    ctx.restore();
+    return;
+  }
   if (item.type === "blur") {
     ctx.save();
     ctx.beginPath();
@@ -5587,7 +6388,8 @@ function loadAnnotationImage(file) {
 
 function setAnnotationMode(mode) {
   if (!annotationState.image) return;
-  if (["number", "mask", "blur", "magnifier"].includes(mode)) {
+  if (annotationState.host === "bg" && mode !== "pen") hideBgAnnotationPenCursor();
+  if (["number", "mask", "blur", "magnifier", "pen"].includes(mode)) {
     annotationState.selectedId = null;
     annotationState.selectedIds = [];
     annotationState.selectedPart = null;
@@ -5597,8 +6399,8 @@ function setAnnotationMode(mode) {
   annotationState.interaction = null;
   annotationState.snapGuides = emptySnapGuides();
   setAnnotationCursor(
-    ["number", "mask", "blur", "magnifier"].includes(mode)
-      ? "crosshair"
+    ["number", "mask", "blur", "magnifier", "pen"].includes(mode)
+      ? mode === "pen" && annotationState.host === "bg" ? "none" : "crosshair"
       : annotationState.zoom > 1.001 ? "grab" : "default"
   );
   updateAnnotationControls();
@@ -5609,6 +6411,7 @@ function setAnnotationMode(mode) {
     mask: "遮挡模式：在图像中拖动框选遮挡区域。",
     blur: "模糊模式：在图像中拖动框选高斯模糊区域。",
     magnifier: "放大镜模式：拖动划定小圆范围，松开后会在右下角创建实时放大圆。",
+    pen: "画笔模式：按住拖动即可绘制线条，粗细与颜色可在右侧调节。",
   };
   annotationStatusText(messages[mode]);
   annotationStage().focus();
@@ -5620,6 +6423,22 @@ function clampAnnotationItem(item) {
     const radius = annotationNumberSize(item) / 2;
     item.x = Math.max(radius, Math.min(canvas.width - radius, item.x));
     item.y = Math.max(radius, Math.min(canvas.height - radius, item.y));
+    return;
+  }
+  if (item.type === "pen") {
+    // 笔迹整体不缩放，越界时平移回画布内。
+    const bounds = penStrokeBounds(item);
+    let dx = 0;
+    let dy = 0;
+    if (bounds.width <= canvas.width) {
+      dx = bounds.x < 0 ? -bounds.x : (bounds.x + bounds.width > canvas.width ? canvas.width - bounds.x - bounds.width : 0);
+    }
+    if (bounds.height <= canvas.height) {
+      dy = bounds.y < 0 ? -bounds.y : (bounds.y + bounds.height > canvas.height ? canvas.height - bounds.y - bounds.height : 0);
+    }
+    if (dx || dy) {
+      item.points = (item.points || []).map(point => ({ x: point.x + dx, y: point.y + dy }));
+    }
     return;
   }
   if (item.type === "magnifier") {
@@ -5639,8 +6458,9 @@ function clampAnnotationItem(item) {
     clampCircle("lensX", "lensY", "lensRadius");
     return;
   }
-  item.width = Math.max(40, Math.min(canvas.width, item.width));
-  item.height = Math.max(30, Math.min(canvas.height, item.height));
+  // 新建和调整遮挡时保留用户实际画出的尺寸；过小的框会在松手阶段直接丢弃。
+  item.width = Math.max(2, Math.min(canvas.width, item.width));
+  item.height = Math.max(2, Math.min(canvas.height, item.height));
   item.x = Math.max(0, Math.min(canvas.width - item.width, item.x));
   item.y = Math.max(0, Math.min(canvas.height - item.height, item.y));
 }
@@ -5784,6 +6604,7 @@ function updateBgAnnotationColor(kind, color) {
     mask: "maskColor",
     number: "numberColor",
     magnifier: "magnifierColor",
+    pen: "penColor",
   }[kind];
   if (!stateKey) return;
   annotationState[stateKey] = normalized;
@@ -5792,7 +6613,7 @@ function updateBgAnnotationColor(kind, color) {
     .forEach(item => { item.color = normalized; });
   updateBgAnnotationControls();
   renderAnnotationCanvas(true);
-  const label = { mask: "遮挡颜色", number: "序号颜色", magnifier: "线条颜色" }[kind];
+  const label = { mask: "遮挡颜色", number: "序号颜色", magnifier: "线条颜色", pen: "画笔颜色" }[kind];
   annotationStatusText(`${label} ${normalized.toUpperCase()} · 共 ${annotationState.items.length} 个标注`);
 }
 
@@ -5829,6 +6650,17 @@ function updateBgAnnotationMaskRadius() {
   $("#bgAnnotationMaskRoundRadiusValue").textContent = `${radius} px`;
   renderAnnotationCanvas(true);
   annotationStatusText(`遮挡圆角 ${radius}px · 共 ${annotationState.items.length} 个标注`);
+}
+
+function updateAnnotationPenWidth() {
+  const width = Math.max(1, Math.round(Number($("#bgAnnotationPenWidth").value) || 6));
+  annotationState.penWidth = width;
+  selectedAnnotationItems()
+    .filter(item => item.type === "pen")
+    .forEach(item => { item.lineWidth = width; });
+  $("#bgAnnotationPenWidthValue").textContent = `${width} px`;
+  renderAnnotationCanvas(true);
+  annotationStatusText(`画笔粗细 ${width}px · 共 ${annotationState.items.length} 个标注`);
 }
 
 function finishAnnotationChange(message) {
@@ -5929,10 +6761,32 @@ function hitAnnotationHandle(item, point) {
   );
 }
 
+function distanceToSegment(point, start, end) {
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const lengthSquared = dx * dx + dy * dy;
+  if (!lengthSquared) return Math.hypot(point.x - start.x, point.y - start.y);
+  let ratio = ((point.x - start.x) * dx + (point.y - start.y) * dy) / lengthSquared;
+  ratio = Math.max(0, Math.min(1, ratio));
+  return Math.hypot(point.x - (start.x + ratio * dx), point.y - (start.y + ratio * dy));
+}
+
 function pointInAnnotationItem(item, point) {
   if (item.type === "number") {
     return Math.hypot(point.x - item.x, point.y - item.y) <=
       annotationNumberSize(item) / 2 + canvasDisplayUnit(annotationCanvas());
+  }
+  if (item.type === "pen") {
+    const points = item.points || [];
+    const tolerance = (Number(item.lineWidth) || 6) / 2 + canvasDisplayUnit(annotationCanvas()) * 2;
+    if (!points.length) return false;
+    if (points.length === 1) {
+      return Math.hypot(point.x - points[0].x, point.y - points[0].y) <= tolerance;
+    }
+    for (let index = 1; index < points.length; index++) {
+      if (distanceToSegment(point, points[index - 1], points[index]) <= tolerance) return true;
+    }
+    return false;
   }
   if (item.type === "magnifier") {
     const margin = magnifierStrokeMargin(item) + canvasDisplayUnit(annotationCanvas());
@@ -5969,13 +6823,38 @@ function annotationPointerDown(event) {
   const existingPart = existingAtPoint?.type === "magnifier"
     ? magnifierPartAtPoint(existingAtPoint, point)
     : null;
-  if (["number", "mask", "blur", "magnifier"].includes(annotationState.mode) && existingAtPoint) {
+  if (["number", "mask", "blur", "magnifier", "pen"].includes(annotationState.mode) && existingAtPoint) {
     annotationState.mode = "view";
     annotationStatusText("已点中现有标注，并自动切换到查看模式。");
   }
   if (annotationState.mode === "number") {
     addAnnotationNumberAt(point);
     annotationStage().focus();
+    event.preventDefault();
+    return;
+  }
+  if (annotationState.mode === "pen") {
+    const item = {
+      id: annotationState.nextId++,
+      type: "pen",
+      points: [{ x: point.x, y: point.y }],
+      color: annotationState.penColor || "#ff5a52",
+      lineWidth: annotationState.penWidth || 6,
+      shadow: Boolean(annotationState.shadows.pen),
+    };
+    annotationState.items.push(item);
+    // 绘制中不显示选择框，避免刚落笔就遮住笔触；松手后再选中成品。
+    annotationState.selectedId = null;
+    annotationState.selectedIds = [];
+    annotationState.selectedPart = null;
+    annotationState.interaction = {
+      mode: "draw-pen",
+      id: item.id,
+    };
+    annotationStage().setPointerCapture?.(event.pointerId);
+    annotationStage().focus();
+    updateAnnotationControls();
+    renderAnnotationCanvas();
     event.preventDefault();
     return;
   }
@@ -6168,8 +7047,7 @@ function annotationPointerDown(event) {
 function moveAnnotationItem(item, interaction, point) {
   const dx = point.x - interaction.start.x;
   const dy = point.y - interaction.start.y;
-  if (item.type === "magnifier") {
-    const part = interaction.part || "lens";
+  if (item.type === "magnifier") {    const part = interaction.part || "lens";
     const xKey = part === "source" ? "sourceX" : "lensX";
     const yKey = part === "source" ? "sourceY" : "lensY";
     item[xKey] = interaction.original[xKey] + dx;
@@ -6180,6 +7058,23 @@ function moveAnnotationItem(item, interaction, point) {
     item[xKey] += snapped.x - bounds.x;
     item[yKey] += snapped.y - bounds.y;
     clampAnnotationItem(item);
+    annotationState.snapGuides = snapped.guides;
+    return;
+  }
+  if (item.type === "pen") {
+    item.points = (interaction.original.points || []).map(original => ({
+      x: original.x + dx,
+      y: original.y + dy,
+    }));
+    clampAnnotationItem(item);
+    const canvas = annotationCanvas();
+    const bounds = selectionFrameBounds(canvas, annotationItemBounds(item));
+    const snapped = snapBoundsToCanvas(bounds, canvas, 10, true);
+    const offsetX = snapped.x - bounds.x;
+    const offsetY = snapped.y - bounds.y;
+    if (offsetX || offsetY) {
+      item.points = item.points.map(penPoint => ({ x: penPoint.x + offsetX, y: penPoint.y + offsetY }));
+    }
     annotationState.snapGuides = snapped.guides;
     return;
   }
@@ -6202,6 +7097,8 @@ function translateAnnotationItem(item, original, dx, dy) {
     item.sourceY = original.sourceY + dy;
     item.lensX = original.lensX + dx;
     item.lensY = original.lensY + dy;
+  } else if (item.type === "pen") {
+    item.points = (original.points || []).map(point => ({ x: point.x + dx, y: point.y + dy }));
   } else {
     item.x = original.x + dx;
     item.y = original.y + dy;
@@ -6285,8 +7182,8 @@ function resizeAnnotationMask(item, interaction, point, event) {
     horizontal: ySnap ? [ySnap.value] : [],
   };
   const resized = resizeBoundsWithModifiers(interaction.original, interaction.handle, point, {
-    minWidth: 40,
-    minHeight: 30,
+    minWidth: 2,
+    minHeight: 2,
     preserveAspect: event.shiftKey,
     centered: event.altKey || event.ctrlKey,
   });
@@ -6295,11 +7192,12 @@ function resizeAnnotationMask(item, interaction, point, event) {
 }
 
 function annotationPointerMove(event) {
+  if (annotationState.host === "bg") updateBgAnnotationPenCursor(event);
   const interaction = annotationState.interaction;
   if (!interaction) {
     if (!annotationState.image) return;
-    if (["number", "mask", "blur", "magnifier"].includes(annotationState.mode)) {
-      setAnnotationCursor("crosshair");
+    if (["number", "mask", "blur", "magnifier", "pen"].includes(annotationState.mode)) {
+      setAnnotationCursor(annotationState.host === "bg" && annotationState.mode === "pen" ? "none" : "crosshair");
       return;
     }
     const point = annotationPointerPosition(event);
@@ -6349,6 +7247,12 @@ function annotationPointerMove(event) {
     };
     const selection = selectionFromPoints(interaction.start, point, event.shiftKey);
     Object.assign(item, selection);
+  } else if (interaction.mode === "draw-pen") {
+    const lastPoint = item.points[item.points.length - 1];
+    if (!lastPoint || Math.hypot(point.x - lastPoint.x, point.y - lastPoint.y) >= 1.5) {
+      item.points.push({ x: point.x, y: point.y });
+    }
+    annotationState.snapGuides = emptySnapGuides();
   } else if (interaction.mode === "create-magnifier") {
     const sourceRadius = Math.hypot(point.x - interaction.start.x, point.y - interaction.start.y);
     item.sourceX = interaction.start.x;
@@ -6399,6 +7303,26 @@ function annotationPointerUp(event) {
   if (interaction.mode === "pan-canvas") {
     setAnnotationCursor(annotationState.zoom > 1.001 ? "grab" : "default");
     annotationStatusText(`查看模式 · 画布缩放 ${Math.round(annotationState.zoom * 100)}%`);
+    return;
+  }
+  if (interaction.mode === "draw-pen") {
+    const item = annotationState.items.find(candidate => candidate.id === interaction.id);
+    if (!item || !item.points.length) {
+      annotationState.items = annotationState.items.filter(candidate => candidate.id !== interaction.id);
+      renderAnnotationCanvas();
+      updateAnnotationControls();
+      return;
+    }
+    // 单击（未拖动）也保留一个圆点笔迹。
+    if (item.points.length === 1) {
+      item.points.push({ x: item.points[0].x + 0.01, y: item.points[0].y });
+    }
+    clampAnnotationItem(item);
+    annotationState.selectedId = item.id;
+    annotationState.selectedIds = [];
+    annotationState.selectedPart = null;
+    finishAnnotationChange("已添加画笔标注");
+    event.preventDefault();
     return;
   }
   if (interaction.mode === "create") {
@@ -7807,6 +8731,7 @@ function imageModuleGlobalKeyDown(event) {
       b: selectNextBlueBgLayer,
       n: () => activateBgAnnotationMode("number"),
       m: () => activateBgAnnotationMode("mask"),
+      p: () => activateBgAnnotationMode("pen"),
       f: () => activateBgAnnotationMode("blur"),
       g: () => activateBgAnnotationMode("magnifier"),
     };
@@ -7820,6 +8745,7 @@ function imageModuleGlobalKeyDown(event) {
   if (moduleId === "imageEditor" && imageEditorState.hasImage) {
     const imageEditorShortcuts = {
       r: () => setImageEditorMode("remove"),
+      e: () => setImageEditorMode("inpaint"),
       c: () => setImageEditorMode("crop"),
       g: () => setImageEditorMode("gradient"),
       s: () => setImageEditorMode("split"),
@@ -7985,6 +8911,22 @@ function bind() {
   $("#expandShort").onclick = () => makeShort("expand").catch(err => $("#shortResult").textContent = err.message);
   $("#bgImportButton").onclick = () => {
     $("#bgFiles").click();
+  };
+  $("#bgAddTabButton").onclick = () => createBgTab();
+  $("#bgCanvasTabs").onclick = event => {
+    const closeButton = event.target.closest("[data-bg-tab-close]");
+    if (closeButton) {
+      event.stopPropagation();
+      closeBgTab(closeButton.dataset.bgTabClose);
+      return;
+    }
+    const tabButton = event.target.closest("[data-bg-tab-id]");
+    if (tabButton) switchBgTab(tabButton.dataset.bgTabId);
+  };
+  $("#bgCanvasTabs").onauxclick = event => {
+    if (event.button !== 1) return;
+    const tabButton = event.target.closest("[data-bg-tab-id]");
+    if (tabButton) closeBgTab(tabButton.dataset.bgTabId);
   };
   $("#bgViewMode").onclick = openBgBackgroundDialog;
   $("#bgBackgroundButton").onclick = openBgImageStylePanel;
@@ -8206,9 +9148,12 @@ function bind() {
     ["#bgAddAnnotationMask", "mask"],
     ["#bgAddAnnotationBlur", "blur"],
     ["#bgAddAnnotationMagnifier", "magnifier"],
+    ["#bgAddAnnotationPen", "pen"],
   ].forEach(([selector, mode]) => {
     $(selector).onclick = () => activateBgAnnotationMode(mode);
   });
+  $("#bgAnnotationPenWidth").oninput = () => withAnnotationState(bgAnnotationState, updateAnnotationPenWidth);
+  $("#bgAnnotationPenWidth").onchange = () => withAnnotationState(bgAnnotationState, pushAnnotationHistory);
   $("#bgAnnotationBlurStrength").oninput = () => withAnnotationState(bgAnnotationState, updateAnnotationBlurStrength);
   $("#bgAnnotationBlurStrength").onchange = () => withAnnotationState(bgAnnotationState, pushAnnotationHistory);
   $("#bgAnnotationMagnifierWidth").oninput = () => withAnnotationState(bgAnnotationState, updateAnnotationMagnifierStyle);
@@ -8237,6 +9182,7 @@ function bind() {
     ["#bgAnnotationMaskColor", "mask"],
     ["#bgAnnotationNumberColor", "number"],
     ["#bgAnnotationMagnifierColor", "magnifier"],
+    ["#bgAnnotationPenColor", "pen"],
   ].forEach(([selector, kind]) => {
     $(selector).oninput = event => saveBgAnnotationCustomColor(kind, event.target.value);
     $(selector).onchange = () => {
@@ -8244,7 +9190,7 @@ function bind() {
       pushBgHistory();
     };
   });
-  ["number", "mask", "blur", "magnifier"].forEach(kind => {
+  ["number", "mask", "blur", "magnifier", "pen"].forEach(kind => {
     const control = $(`#bgAnnotation${kind[0].toUpperCase()}${kind.slice(1)}Shadow`);
     control.onchange = () => {
       updateBgAnnotationShadow(kind, control.checked);
@@ -8262,6 +9208,9 @@ function bind() {
   $("#blueBgStage").onpointermove = blueBgStagePointerMove;
   $("#blueBgStage").onpointerup = blueBgStagePointerUp;
   $("#blueBgStage").onpointercancel = blueBgStagePointerUp;
+  $("#blueBgStage").onpointerleave = () => {
+    if (!bgAnnotationState.interaction) hideBgAnnotationPenCursor();
+  };
   $("#blueBgMoveUp").onclick = () => moveContextBgMaterial(1);
   $("#blueBgMoveDown").onclick = () => moveContextBgMaterial(-1);
   $("#blueBgEditSelected").onclick = () => {
@@ -8275,6 +9224,20 @@ function bind() {
   $("#imageEditorFile").onchange = event => loadImageEditorFile(event.target.files[0]).catch(err => alert(err.message));
   $("#imageEditorMoveMode").onclick = () => setImageEditorMode("view");
   $("#imageEditorRemoveMode").onclick = () => setImageEditorMode("remove");
+  $("#imageEditorInpaintMode").onclick = () => setImageEditorMode("inpaint");
+  $("#imageEditorCoverMode").onclick = () => setImageEditorMode("cover");
+  $$("#imageEditorCoverControls [data-cover-shape]").forEach(button => {
+    button.onclick = () => {
+      imageEditorState.coverShape = button.dataset.coverShape === "ellipse" ? "ellipse" : "rect";
+      updateImageEditorControls();
+      renderImageEditorCanvas();
+    };
+  });
+  $("#imageEditorInpaintSize").oninput = () => {
+    imageEditorState.inpaintSize = Number($("#imageEditorInpaintSize").value) || imageEditorState.inpaintSize;
+    $("#imageEditorInpaintSizeValue").textContent = `${imageEditorState.inpaintSize} px`;
+    refreshImageEditorInpaintCursor();
+  };
   $("#imageEditorCropMode").onclick = () => setImageEditorMode("crop");
   $("#imageEditorGradientMode").onclick = () => setImageEditorMode("gradient");
   $("#imageEditorMoreButton").onclick = () => {
@@ -8314,6 +9277,7 @@ function bind() {
   $("#imageEditorStage").onpointerup = imageEditorPointerUp;
   $("#imageEditorStage").onpointercancel = imageEditorPointerUp;
   $("#imageEditorStage").onscroll = syncImageEditorOverlays;
+  $("#imageEditorStage").onpointerleave = hideImageEditorInpaintCursor;
   $("#imageEditorStage").addEventListener("wheel", imageEditorWheel, { passive: false });
   $("#imageEditorStage").addEventListener("gesturestart", imageEditorGestureStart, { passive: false });
   $("#imageEditorStage").addEventListener("gesturechange", imageEditorGestureChange, { passive: false });
@@ -8470,4 +9434,5 @@ bind();
 initializeBgAnnotationCustomColors();
 openBgBackgroundDialog();
 toggleBlueBgMode();
+createBgTab();
 showTab("bg");
