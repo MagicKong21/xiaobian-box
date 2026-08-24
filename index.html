@@ -7,7 +7,7 @@
   <meta name="theme-color" content="#ffffff">
   <title>小编工具箱</title>
   <link rel="icon" type="image/png" href="./assets/toolbox-icon.png">
-  <link rel="stylesheet" href="./styles.css?v=20260812-option-tiles1">
+  <link rel="stylesheet" href="./styles.css?v=20260824-compact-context-menu">
 </head>
 <body>
   <nav class="tabs" aria-label="工具导航">
@@ -215,7 +215,7 @@
             <div id="blueBgEditor" class="blue-bg-editor" hidden>
               <div id="bgCanvasTabBar" class="bg-canvas-tab-bar" hidden>
                 <div id="bgCanvasTabs" class="bg-canvas-tabs" role="tablist" aria-label="画布标签页"></div>
-                <button id="bgAddTabButton" class="bg-canvas-tab-add" type="button" title="新建空白画布"><span class="bg-canvas-tab-add-symbol">＋</span><small>新建</small></button>
+                <button id="bgAddTabButton" class="bg-canvas-tab-add" type="button" aria-label="新建空白画布" title="新建空白画布"><span class="bg-canvas-tab-add-symbol" aria-hidden="true">＋</span></button>
               </div>
               <div id="blueBgStage" class="blue-bg-stage" tabindex="0" aria-label="美化 / 标注画布">
                 <canvas id="blueBgCanvas" width="2000" height="1083"></canvas>
@@ -258,7 +258,7 @@
               </label>
               <label class="bg-effect-control bg-effect-size">
                 <span class="bg-effect-control-heading"><span>图片缩放</span><strong id="bgEffectScaleValue">—</strong></span>
-                <input id="bgEffectScale" type="range" value="90" min="10" max="200" step="1" disabled>
+                <input id="bgEffectScale" type="range" value="90" min="10" max="500" step="1" disabled>
               </label>
             </div>
             <aside id="bgBackgroundDialog" class="bg-background-panel" aria-label="更改背景" hidden>
@@ -268,6 +268,7 @@
                 <input id="bgWallpaperSelect" type="hidden" value="macos-11">
                 <input id="bgCanvasAspect" type="hidden" value="default">
                 <input id="bgBackgroundFile" type="file" accept="image/*" hidden>
+                <input id="bgCustomWallpaperFile" type="file" accept="image/*" hidden>
                 <select id="bgBackgroundMaterial" hidden><option value="">不使用素材库图片</option></select>
                 <section class="bg-background-section" aria-labelledby="bgBasicTitle">
                   <h3 id="bgBasicTitle">基础款</h3>
@@ -297,6 +298,7 @@
                     <button class="bg-background-tile" type="button" data-bg-type="gradient" data-bg-gradient="aurora" title="极光紫绿"><span class="bg-background-tile-preview" style="background:linear-gradient(135deg,#A8EDEA,#FED6E3)"></span><strong>极光</strong></button>
                     <button class="bg-background-tile" type="button" data-bg-type="gradient" data-bg-gradient="midnight" title="午夜蓝紫"><span class="bg-background-tile-preview" style="background:linear-gradient(135deg,#1B2755,#6B4FA1)"></span><strong>午夜</strong></button>
                     <button class="bg-background-tile" type="button" data-bg-type="gradient" data-bg-gradient="mint" title="薄荷奶油"><span class="bg-background-tile-preview" style="background:linear-gradient(135deg,#D4FC79,#96E6A1)"></span><strong>薄荷</strong></button>
+                    <button class="bg-background-tile bg-background-add-tile" type="button" data-bg-add-custom="gradient" title="添加自定义渐变"><span class="bg-background-tile-preview bg-background-add-preview"><span class="tool-symbol tool-symbol-import" aria-hidden="true"></span></span><strong>添加自定义</strong></button>
                   </div>
                 </section>
                 <section class="bg-background-section" aria-labelledby="bgWallpaperTitle">
@@ -308,16 +310,20 @@
                   <div class="bg-aspect-tile-grid">
                     <button type="button" data-bg-aspect="default" title="按照首张图片自动生成">默认</button>
                     <button type="button" data-bg-aspect="blue" title="2000 : 1083">蓝底</button>
-                    <button type="button" data-bg-aspect="1:1" title="1 : 1">正方形</button>
-                    <button type="button" data-bg-aspect="4:3" title="4 : 3">横图</button>
-                    <button type="button" data-bg-aspect="3:4" title="3 : 4">竖图</button>
-                    <button type="button" data-bg-aspect="16:9" title="16 : 9">宽屏</button>
-                    <button type="button" data-bg-aspect="9:16" title="9 : 16">竖屏</button>
+                    <button type="button" data-bg-aspect="1:1" title="1 : 1">1 : 1</button>
+                    <button type="button" data-bg-aspect="4:3" title="4 : 3">4 : 3</button>
+                    <button type="button" data-bg-aspect="3:4" title="3 : 4">3 : 4</button>
+                    <button type="button" data-bg-aspect="16:9" title="16 : 9">16 : 9</button>
+                    <button type="button" data-bg-aspect="9:16" title="9 : 16">9 : 16</button>
+                    <button type="button" class="bg-aspect-add-tile" data-bg-add-custom="aspect" title="添加自定义画面比例"><span class="tool-symbol tool-symbol-import" aria-hidden="true"></span></button>
                   </div>
                 </section>
                 <p id="bgBackgroundFeedback" class="bg-background-feedback" role="status" hidden></p>
               </div>
             </aside>
+            <div id="bgChoiceContextMenu" class="blue-bg-context-menu bg-choice-context-menu" role="menu" hidden>
+              <button id="bgChoiceRemove" class="context-danger" type="button" role="menuitem">移除</button>
+            </div>
             <aside id="bgAnnotationInspector" class="bg-annotation-inspector" aria-label="标注效果调节" hidden>
               <div id="bgAnnotationMaskControls" class="bg-annotation-control" hidden>
                 <label class="bg-effect-switch-row"><input id="bgAnnotationMaskShadow" type="checkbox"> 阴影效果</label>
@@ -690,6 +696,6 @@
 
   <div class="tool-version"><img src="./assets/toolbox-icon.png" alt="" aria-hidden="true">小编工具箱</div>
 
-  <script src="./app.js?v=20260823-export-cors-diagnosis"></script>
+  <script src="./app.js?v=20260824-layer-scale-500"></script>
 </body>
 </html>

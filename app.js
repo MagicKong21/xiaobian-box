@@ -70,6 +70,9 @@ const BG_GRADIENT_PRESETS = [
   { id: "midnight", label: "午夜蓝紫", from: "#1B2755", to: "#6B4FA1", angle: 135 },
   { id: "mint", label: "薄荷奶油", from: "#D4FC79", to: "#96E6A1", angle: 135 },
 ];
+let customBgGradients = [];
+let customBgWallpapers = [];
+let customBgAspects = [];
 const MACOS_WALLPAPERS = [
   { id: "macos-11", label: "Big Sur", url: "./assets/wallpapers/macos-11-big-sur.jpg", source: "512 Pixels" },
   { id: "macos-12", label: "Monterey", url: "./assets/wallpapers/macos-12-monterey.jpg", source: "AppleWalls" },
@@ -1583,7 +1586,7 @@ function isCrossOriginImageSource(source) {
 function bgAspectRatioForMode(mode = blueBgState.aspectMode) {
   if (mode === "blue") return 2000 / 1083;
   if (mode === "default") return blueBgState.defaultAspect || 2000 / 1083;
-  const preset = Object.values(BG_ASPECTS).find(item => item.value === mode);
+  const preset = [...Object.values(BG_ASPECTS), ...customBgAspects].find(item => item.value === mode);
   return preset?.ratio || 2000 / 1083;
 }
 
@@ -1632,7 +1635,7 @@ function updateUnifiedBgCanvasSize(firstImage = null) {
 async function ensureUnifiedBgBackground(firstImage = null) {
   updateUnifiedBgCanvasSize(firstImage);
   if (blueBgState.backgroundType === "wallpaper" && !blueBgState.backgroundImage) {
-    const wallpaper = MACOS_WALLPAPERS.find(item => item.id === blueBgState.backgroundImageName) || MACOS_WALLPAPERS[0];
+    const wallpaper = [...MACOS_WALLPAPERS, ...customBgWallpapers].find(item => item.id === blueBgState.backgroundImageName) || MACOS_WALLPAPERS[0];
     blueBgState.backgroundImage = await loadImageSource(wallpaper.url);
     blueBgState.backgroundImageName = wallpaper.id;
     blueBgState.backgroundImageUrl = wallpaper.url;
@@ -2060,7 +2063,7 @@ function drawUnifiedBackground(ctx, canvas) {
     return;
   }
   if (type === "gradient") {
-    const preset = BG_GRADIENT_PRESETS.find(item => item.id === blueBgState.backgroundGradient) || BG_GRADIENT_PRESETS[0];
+    const preset = [...BG_GRADIENT_PRESETS, ...customBgGradients].find(item => item.id === blueBgState.backgroundGradient) || BG_GRADIENT_PRESETS[0];
     const angle = (preset.angle || 135) * Math.PI / 180;
     const length = Math.abs(width * Math.cos(angle)) + Math.abs(height * Math.sin(angle));
     const centerX = width / 2;
@@ -2102,7 +2105,7 @@ function renderBgWallpaperChoices() {
   const wrap = $("#bgWallpaperChoices");
   if (!wrap) return;
   wrap.innerHTML = "";
-  MACOS_WALLPAPERS.forEach(wallpaper => {
+  [...MACOS_WALLPAPERS, ...customBgWallpapers].forEach(wallpaper => {
     const button = document.createElement("button");
     button.type = "button";
     button.className = "bg-background-tile";
@@ -2111,17 +2114,93 @@ function renderBgWallpaperChoices() {
     const label = wallpaper.label.replace("macOS ", "");
     const compactClass = label.length >= 10 ? " bg-background-tile-label-compact" : "";
     button.innerHTML = `<span class="bg-background-tile-preview"><img src="${wallpaper.url}" alt=""></span><strong class="${compactClass.trim()}">${label}</strong>`;
+    button.dataset.bgCustom = wallpaper.custom ? "true" : "";
     button.title = `${wallpaper.label} · 来源：${wallpaper.source}`;
     wrap.appendChild(button);
   });
   const customButton = document.createElement("button");
   customButton.type = "button";
-  customButton.className = "bg-background-tile";
-  customButton.dataset.bgType = "image";
-  customButton.dataset.bgCustom = "true";
+  customButton.className = "bg-background-tile bg-background-add-tile";
+  customButton.dataset.bgAddCustom = "wallpaper";
   customButton.title = "上传自定义背景图片";
-  customButton.innerHTML = '<span class="bg-background-tile-preview bg-background-add-preview">＋</span><strong>自定义</strong>';
+  customButton.innerHTML = '<span class="bg-background-tile-preview bg-background-add-preview"><span class="tool-symbol tool-symbol-import" aria-hidden="true"></span></span><strong>上传自定义</strong>';
   wrap.appendChild(customButton);
+}
+
+function renderBgCustomChoices() {
+  const gradientGrid = $("[aria-labelledby=bgGradientTitle] .bg-background-tile-grid");
+  if (gradientGrid) {
+    gradientGrid.querySelectorAll("[data-bg-custom-gradient]").forEach(tile => tile.remove());
+    customBgGradients.forEach(item => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "bg-background-tile";
+      button.dataset.bgType = "gradient";
+      button.dataset.bgGradient = item.id;
+      button.dataset.bgCustomGradient = "true";
+      button.title = `${item.label}（自定义）`;
+      button.innerHTML = `<span class="bg-background-tile-preview" style="background:linear-gradient(135deg,${item.from},${item.to})"></span><strong>${item.label}</strong>`;
+      gradientGrid.appendChild(button);
+    });
+    const add = gradientGrid.querySelector("[data-bg-add-custom=gradient]");
+    if (add) gradientGrid.appendChild(add);
+  }
+  const aspectGrid = $(".bg-aspect-tile-grid");
+  if (aspectGrid) {
+    aspectGrid.querySelectorAll("[data-bg-custom-aspect]").forEach(tile => tile.remove());
+    customBgAspects.forEach(item => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.dataset.bgAspect = item.value;
+      button.dataset.bgCustomAspect = "true";
+      button.title = `${item.label}（自定义）`;
+      button.textContent = item.label;
+      aspectGrid.insertBefore(button, aspectGrid.querySelector("[data-bg-add-custom=aspect]") || null);
+    });
+  }
+}
+
+function addCustomBgGradient() {
+  const from = prompt("请输入渐变起始颜色（例如 #42B5F5）", "#42B5F5")?.trim();
+  if (!from) return;
+  const to = prompt("请输入渐变结束颜色（例如 #E8F5FF）", "#E8F5FF")?.trim();
+  if (!to || !CSS.supports("color", from) || !CSS.supports("color", to)) {
+    blueBgStatus("请输入有效的颜色值。");
+    return;
+  }
+  const id = `custom-gradient-${Date.now()}`;
+  customBgGradients.push({ id, label: "自定义", from, to, angle: 135, custom: true });
+  renderBgCustomChoices();
+  $("#bgBackgroundType").value = "gradient";
+  $("#bgBackgroundGradient").value = id;
+  applyBgBackgroundFromTiles();
+}
+
+function addCustomBgAspect() {
+  const raw = prompt("请输入画面比例，例如 5:4", "5:4")?.trim();
+  const match = raw?.match(/^(\d+(?:\.\d+)?)\s*[:：]\s*(\d+(?:\.\d+)?)$/);
+  if (!match || Number(match[1]) <= 0 || Number(match[2]) <= 0) {
+    if (raw) blueBgStatus("请输入有效的画面比例，例如 5:4。");
+    return;
+  }
+  const width = Number(match[1]);
+  const height = Number(match[2]);
+  const value = `custom-${Date.now()}`;
+  customBgAspects.push({ value, label: `${match[1]} : ${match[2]}`, ratio: width / height, custom: true });
+  renderBgCustomChoices();
+  $("#bgCanvasAspect").value = value;
+  applyBgBackgroundFromTiles();
+}
+
+async function addCustomBgWallpaper(file) {
+  if (!file) return;
+  const url = URL.createObjectURL(file);
+  const id = `custom-wallpaper-${Date.now()}`;
+  customBgWallpapers.push({ id, label: file.name, url, source: "自定义", custom: true });
+  renderBgWallpaperChoices();
+  $("#bgBackgroundType").value = "wallpaper";
+  $("#bgWallpaperSelect").value = id;
+  await applyBgBackgroundFromTiles();
 }
 
 function syncBgBackgroundTileSelection() {
@@ -2160,7 +2239,8 @@ function openBgBackgroundDialog() {
   $("#bgBackgroundGradient").value = blueBgState.backgroundGradient || BG_GRADIENT_PRESETS[0].id;
   $("#bgCanvasAspect").value = blueBgState.aspectMode || "default";
   renderBgWallpaperChoices();
-  const wallpaper = MACOS_WALLPAPERS.find(item => item.id === blueBgState.backgroundImageName) || MACOS_WALLPAPERS[0];
+  renderBgCustomChoices();
+  const wallpaper = [...MACOS_WALLPAPERS, ...customBgWallpapers].find(item => item.id === blueBgState.backgroundImageName) || MACOS_WALLPAPERS[0];
   $("#bgWallpaperSelect").value = wallpaper.id;
   const feedback = $("#bgBackgroundFeedback");
   feedback.textContent = "";
@@ -2234,7 +2314,7 @@ async function applyBgBackgroundSettings() {
   if (type === "solid") localStorage.setItem(BG_CUSTOM_COLOR_KEY, blueBgState.backgroundColor);
   blueBgState.backgroundGradient = $("#bgBackgroundGradient").value || BG_GRADIENT_PRESETS[0].id;
   if (type === "wallpaper") {
-    const wallpaper = MACOS_WALLPAPERS.find(item => item.id === $("#bgWallpaperSelect").value) || MACOS_WALLPAPERS[0];
+    const wallpaper = [...MACOS_WALLPAPERS, ...customBgWallpapers].find(item => item.id === $("#bgWallpaperSelect").value) || MACOS_WALLPAPERS[0];
     blueBgState.backgroundImage = await loadImageSource(wallpaper.url);
     blueBgState.backgroundImageName = wallpaper.id;
     blueBgState.backgroundImageUrl = wallpaper.url;
@@ -2327,7 +2407,7 @@ function syncBgEffectToolbar() {
   $("#bgCanvasZoom").value = String(Math.round(blueBgState.zoom * 100));
   $("#bgCanvasZoomValue").textContent = `${Math.round(blueBgState.zoom * 100)}%`;
   $("#bgEffectScale").min = blueprint ? "10" : "40";
-  $("#bgEffectScale").max = blueprint ? "200" : "150";
+  $("#bgEffectScale").max = "500";
   if (selected) {
     $("#bgEffectShadow").checked = selected.shadow;
     $("#bgEffectRound").checked = selected.round;
@@ -2371,8 +2451,8 @@ function updateBlueBgControls() {
 
 function clampBlueBgLayer(layer) {
   const canvas = blueBgCanvas();
-  layer.width = Math.max(Math.max(80, layer.fitWidth * 0.1), Math.min(layer.fitWidth * 2, layer.width));
-  layer.height = Math.max(Math.max(60, layer.fitHeight * 0.1), Math.min(layer.fitHeight * 2, layer.height));
+  layer.width = Math.max(Math.max(80, layer.fitWidth * 0.1), Math.min(layer.fitWidth * 5, layer.width));
+  layer.height = Math.max(Math.max(60, layer.fitHeight * 0.1), Math.min(layer.fitHeight * 5, layer.height));
   const radius = Number(layer.cornerRadius);
   // 状态中的圆角值是用户设置的画布像素值；绘制时才按当前图层尺寸
   // 临时限幅，不能在缩小图层后永久改小该设置。
@@ -2839,7 +2919,7 @@ function blueBgPointerMove(event) {
     });
     if (!event.shiftKey || centered) {
       const minScale = 0.1;
-      const maxScale = 2;
+      const maxScale = 5;
       const scale = Math.max(
         minScale,
         Math.min(maxScale, resized.width / interaction.original.fitWidth)
@@ -3078,6 +3158,57 @@ function showBlueBgContextMenuForMaterial(materialIndex, clientX, clientY) {
   menu.style.left = `${Math.min(clientX, window.innerWidth - 160)}px`;
   menu.style.top = `${Math.min(clientY, window.innerHeight - 174)}px`;
   menu.hidden = false;
+}
+
+let bgChoiceContext = null;
+
+function hideBgChoiceContextMenu() {
+  const menu = $("#bgChoiceContextMenu");
+  if (menu) menu.hidden = true;
+  bgChoiceContext = null;
+}
+
+function showBgChoiceContextMenu(tile, clientX, clientY) {
+  const kind = tile.dataset.bgCustomGradient ? "gradient"
+    : tile.dataset.bgCustomAspect ? "aspect"
+      : tile.dataset.bgType === "wallpaper" ? "wallpaper" : tile.dataset.bgAspect ? "aspect" : tile.dataset.bgType === "gradient" ? "gradient" : "";
+  if (!kind) return;
+  const custom = Boolean(tile.dataset.bgCustomGradient || tile.dataset.bgCustomAspect || tile.dataset.bgCustom === "true");
+  bgChoiceContext = { kind, custom, id: kind === "gradient" ? tile.dataset.bgGradient : kind === "aspect" ? tile.dataset.bgAspect : tile.dataset.bgWallpaper };
+  const menu = $("#bgChoiceContextMenu");
+  const remove = $("#bgChoiceRemove");
+  remove.disabled = !custom;
+  remove.title = custom ? "移除自定义项" : "仅支持移除自定义项";
+  menu.style.left = `${Math.min(clientX, window.innerWidth - 160)}px`;
+  menu.style.top = `${Math.min(clientY, window.innerHeight - 52)}px`;
+  menu.hidden = false;
+}
+
+async function removeCustomBgChoice() {
+  if (!bgChoiceContext?.custom) return;
+  const { kind, id } = bgChoiceContext;
+  if (kind === "gradient") {
+    customBgGradients = customBgGradients.filter(item => item.id !== id);
+    if ($("#bgBackgroundGradient").value === id) {
+      $("#bgBackgroundType").value = "gradient";
+      $("#bgBackgroundGradient").value = BG_GRADIENT_PRESETS[0].id;
+    }
+  } else if (kind === "aspect") {
+    customBgAspects = customBgAspects.filter(item => item.value !== id);
+    if ($("#bgCanvasAspect").value === id) $("#bgCanvasAspect").value = "default";
+  } else {
+    const wallpaper = customBgWallpapers.find(item => item.id === id);
+    if (wallpaper?.url) URL.revokeObjectURL(wallpaper.url);
+    customBgWallpapers = customBgWallpapers.filter(item => item.id !== id);
+    if ($("#bgWallpaperSelect").value === id) {
+      $("#bgBackgroundType").value = "wallpaper";
+      $("#bgWallpaperSelect").value = MACOS_WALLPAPERS[0].id;
+    }
+  }
+  hideBgChoiceContextMenu();
+  renderBgWallpaperChoices();
+  renderBgCustomChoices();
+  await applyBgBackgroundFromTiles();
 }
 
 function orderedBgMaterialIndexes() {
@@ -3791,7 +3922,7 @@ function toggleDefaultBgMaterialSelection(index) {
 function saveBgMaterialInspector() {
   const indexes = selectedDefaultBgMaterialIndexes();
   if (!indexes.length || $("#bgBlueMode").checked) return;
-  const scale = Math.max(40, Math.min(150, Number($("#bgEffectScale").value) || 90));
+  const scale = Math.max(40, Math.min(500, Number($("#bgEffectScale").value) || 90));
   indexes.forEach(index => {
     const material = bgMaterials[index];
     material.scale = scale;
@@ -8935,12 +9066,23 @@ function bind() {
     $("#bgBackgroundType").value = "image";
     applyBgBackgroundFromTiles();
   };
+  $("#bgCustomWallpaperFile").onchange = event => {
+    addCustomBgWallpaper(event.target.files?.[0]).catch(err => blueBgStatus(err.message));
+    event.target.value = "";
+  };
   $("#bgBackgroundColor").onchange = () => {
     $("#bgBackgroundType").value = "solid";
     localStorage.setItem(BG_CUSTOM_COLOR_KEY, $("#bgBackgroundColor").value);
     applyBgBackgroundFromTiles();
   };
   $("#bgBackgroundDialog").onclick = event => {
+    const addCustom = event.target.closest("[data-bg-add-custom]");
+    if (addCustom) {
+      if (addCustom.dataset.bgAddCustom === "wallpaper") $("#bgCustomWallpaperFile").click();
+      else if (addCustom.dataset.bgAddCustom === "gradient") addCustomBgGradient();
+      else if (addCustom.dataset.bgAddCustom === "aspect") addCustomBgAspect();
+      return;
+    }
     const customTile = event.target.closest("[data-bg-custom]");
     if (customTile) {
       $("#bgBackgroundFile").click();
@@ -8960,6 +9102,14 @@ function bind() {
       applyBgBackgroundFromTiles();
     }
   };
+  $("#bgBackgroundDialog").oncontextmenu = event => {
+    const tile = event.target.closest("[data-bg-type], [data-bg-aspect]");
+    if (!tile) return;
+    const isCustom = tile.dataset.bgCustomGradient || tile.dataset.bgCustomAspect || tile.dataset.bgCustom;
+    event.preventDefault();
+    showBgChoiceContextMenu(tile, event.clientX, event.clientY);
+  };
+  $("#bgChoiceRemove").onclick = () => removeCustomBgChoice().catch(err => blueBgStatus(err.message));
   $("#bgUndo").onclick = () => {
     closeBgBackgroundPanel();
     restoreBgHistory(bgHistoryIndex - 1);
@@ -9289,6 +9439,7 @@ function bind() {
   });
   document.addEventListener("pointerdown", event => {
     if (!event.target.closest("#blueBgContextMenu")) hideBlueBgContextMenu();
+    if (!event.target.closest("#bgChoiceContextMenu")) hideBgChoiceContextMenu();
     if (!event.target.closest(".image-editor-more")) {
       $("#imageEditorMoreMenu").hidden = true;
       $("#imageEditorMoreButton").setAttribute("aria-expanded", "false");

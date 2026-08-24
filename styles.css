@@ -8,6 +8,7 @@
   --muted: #667085;
   --brand: #1677ff;
   --brand-dark: #0958d9;
+  --control-hover: #dbeafe;
 }
 
 * { box-sizing: border-box; }
@@ -62,15 +63,20 @@ p { margin: 4px 0 0; }
   color: #475467;
   font-weight: 600;
 }
-.tab-buttons button:hover {
+.tab-buttons button:not(.active):hover {
   border-color: transparent;
-  background: rgba(255, 255, 255, .6);
+  background: var(--control-hover);
 }
 .tab-buttons button.active {
   border-color: #e2e7ef;
   background: #fff;
   color: var(--text);
   box-shadow: 0 1px 4px rgba(16, 24, 40, .12);
+}
+.tab-buttons button.active:hover {
+  border-color: #e2e7ef;
+  background: #fff;
+  color: var(--text);
 }
 .topbar-zoom-controls {
   display: flex;
@@ -115,21 +121,22 @@ p { margin: 4px 0 0; }
   gap: 7px;
   min-height: 38px;
   padding: 8px 17px;
-  border-color: var(--brand);
+  border-color: #cfd7e4;
   border-radius: 9px;
-  background: var(--brand);
-  color: #fff;
+  background: #fff;
+  color: var(--brand);
   font-weight: 600;
   box-shadow: 0 3px 9px rgba(22, 119, 255, .18);
 }
 .topbar-export-button[hidden] { display: none; }
-.topbar-export-button:hover {
-  border-color: var(--brand-dark);
-  background: var(--brand-dark);
+.topbar-export-button:hover:not(:disabled) {
+  border-color: #cfd7e4;
+  background: var(--control-hover);
 }
 .topbar-export-button:disabled {
-  border-color: #b9d5fa;
-  background: #b9d5fa;
+  border-color: #d0d5dd;
+  background: #eef0f2;
+  color: #667085;
   box-shadow: none;
   cursor: not-allowed;
 }
@@ -158,7 +165,10 @@ button {
   cursor: pointer;
   font: inherit;
 }
-button:hover { border-color: var(--brand); }
+button:hover:not(:disabled) {
+  border-color: var(--brand);
+  background: var(--control-hover);
+}
 button.active, button.primary {
   background: var(--brand);
   border-color: var(--brand);
@@ -398,9 +408,9 @@ fieldset input { width: auto; }
   font-weight: 600;
   box-shadow: 0 2px 7px rgba(16, 24, 40, .06);
 }
-.bg-material-library-import:hover {
-  border-color: var(--brand);
-  background: #f7fbff;
+.bg-material-library-import:hover:not(:disabled) {
+  border-color: #cfd7e4;
+  background: var(--control-hover);
 }
 .bg-material-library-import:disabled {
   color: #98a2b3;
@@ -605,42 +615,43 @@ body.is-dragging-bg-material * {
 .bg-canvas-tab-bar {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 3px;
   flex: 0 0 auto;
   box-sizing: border-box;
   width: 100%;
   margin: 0 0 10px;
-  padding: 5px 6px;
-  border: 1px solid var(--line);
+  padding: 3px;
+  border: 1px solid #e6e9ef;
   border-radius: 10px;
-  background: #fff;
+  background: #f2f4f7;
+  box-shadow: inset 0 1px 2px rgba(16, 24, 40, .04);
 }
 .bg-canvas-tab-bar[hidden] { display: none; }
 .bg-canvas-tabs {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 0;
   flex: 0 1 auto;
   min-width: 0;
   overflow-x: auto;
   overscroll-behavior-x: contain;
 }
-/* 画布标签页：参考 Chrome 的标签样式，结合项目原生的蓝灰色板。
-   激活标签淡蓝底加品牌色描边，非激活灰字透明底，悬停浅灰；
-   关闭钮在标签右侧，悬停或激活时显示。 */
+/* 画布标签页与顶部工具切换共用“灰底容器＋白色当前项”的层级表达。 */
 .bg-canvas-tab {
   display: inline-flex;
   align-items: center;
+  position: relative;
+  isolation: isolate;
   gap: 6px;
   flex: 0 1 auto;
   box-sizing: border-box;
   min-width: 0;
   max-width: 180px;
-  min-height: 30px;
-  padding: 4px 6px 4px 12px;
+  min-height: 32px;
+  padding: 4px 9px;
   border: 1px solid transparent;
-  border-radius: 8px;
-  color: var(--muted);
+  border-radius: 7px;
+  color: #667085;
   background: transparent;
   font-size: 12px;
   font-weight: 600;
@@ -648,13 +659,39 @@ body.is-dragging-bg-material * {
   white-space: nowrap;
 }
 .bg-canvas-tab:hover {
-  color: var(--text);
-  background: #f2f4f7;
+  color: #475467;
+  background: transparent;
+}
+.bg-canvas-tab:not(.active):hover::after {
+  position: absolute;
+  inset: 2px 4px;
+  z-index: 0;
+  border-radius: 5px;
+  background: var(--control-hover);
+  content: "";
+}
+.bg-canvas-tab > * {
+  position: relative;
+  z-index: 1;
 }
 .bg-canvas-tab.active {
-  border-color: var(--brand);
-  color: var(--brand-dark);
-  background: rgba(22, 119, 255, .08);
+  border-color: #e2e7ef;
+  color: var(--text);
+  background: #fff;
+  box-shadow: none;
+}
+.bg-canvas-tab:not(.active) + .bg-canvas-tab:not(.active)::before {
+  position: absolute;
+  top: 9px;
+  left: 0;
+  width: 1px;
+  height: 14px;
+  background: #d0d5dd;
+  content: "";
+}
+.bg-canvas-tab:hover::before,
+.bg-canvas-tab:hover + .bg-canvas-tab::before {
+  display: none;
 }
 .bg-canvas-tab-label {
   overflow: hidden;
@@ -667,6 +704,7 @@ body.is-dragging-bg-material * {
   flex: 0 0 auto;
   width: 18px;
   height: 18px;
+  margin-left: 4px;
   padding: 0;
   border: 0;
   border-radius: 50%;
@@ -677,42 +715,58 @@ body.is-dragging-bg-material * {
   cursor: pointer;
   opacity: 0;
 }
-.bg-canvas-tab.active .bg-canvas-tab-close,
 .bg-canvas-tab:hover .bg-canvas-tab-close,
+.bg-canvas-tab:focus-within .bg-canvas-tab-close,
 .bg-canvas-tab-close:focus-visible {
   opacity: .8;
 }
 .bg-canvas-tab-close:hover {
-  color: #fff;
-  background: #98a2b3;
+  color: #475467;
+  background: var(--control-hover);
   opacity: 1 !important;
 }
 .bg-canvas-tab-add {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
+  position: relative;
+  display: grid;
+  place-items: center;
   flex: 0 0 auto;
-  min-height: 26px;
-  margin-left: 2px;
-  padding: 3px 10px;
-  border: 1px dashed #c7ced9;
-  border-radius: 8px;
-  color: var(--muted);
+  width: 32px;
+  height: 32px;
+  margin-left: 1px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  color: #475467;
   background: transparent;
-  font-size: 12px;
-  font-weight: 600;
+  font-size: 18px;
+  font-weight: 400;
   cursor: pointer;
   white-space: nowrap;
 }
-.bg-canvas-tab-add:hover {
-  border-color: var(--brand);
-  color: var(--brand-dark);
+.bg-canvas-tabs:has(.bg-canvas-tab:last-child:not(.active)) + .bg-canvas-tab-add::before {
+  position: absolute;
+  top: 9px;
+  left: -2px;
+  width: 1px;
+  height: 14px;
+  background: #d0d5dd;
+  content: "";
 }
-.bg-canvas-tab-add small {
-  font-size: 12px;
+.bg-canvas-tabs:has(.bg-canvas-tab:last-child:hover) + .bg-canvas-tab-add::before {
+  display: none;
+}
+.bg-canvas-tab-add:hover {
+  border-radius: 50%;
+}
+.bg-canvas-tab-add:hover:not(:disabled) {
+  border-color: transparent;
+  background: var(--control-hover);
+}
+.bg-canvas-tab-add:hover::before {
+  display: none;
 }
 .bg-canvas-tab-add-symbol {
-  font-size: 14px;
+  font-size: 18px;
   line-height: 1;
 }
 .bg-effect-toolbar {
@@ -908,6 +962,21 @@ body.is-dragging-bg-material * {
 }
 .blue-bg-context-menu .context-danger { color: #d92d20; }
 .blue-bg-context-menu .context-danger:hover:not(:disabled) { background: #fff1f0; }
+.bg-choice-context-menu {
+  min-width: 0;
+  width: max-content;
+  padding: 4px;
+}
+.bg-choice-context-menu button {
+  min-width: 0;
+  padding: 6px 10px;
+  white-space: nowrap;
+}
+.bg-choice-context-menu button:disabled {
+  color: #98a2b3;
+  background: #f2f4f7;
+  cursor: not-allowed;
+}
 .blue-bg-footer {
   display: flex;
   justify-content: center;
@@ -1095,7 +1164,7 @@ body.is-dragging-bg-material * {
 }
 .bg-aspect-tile-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 7px;
 }
 .bg-background-tile-slot { position: relative; min-width: 0; aspect-ratio: 1; }
@@ -1178,11 +1247,47 @@ body.is-dragging-bg-material * {
 .bg-background-add-preview {
   display: grid;
   place-items: center;
-  border: 1px dashed #98a2b3;
+  border: 0;
   color: var(--brand);
-  background: #f8fafc;
+  background: #fff;
   font-size: 28px;
   font-weight: 300;
+}
+.bg-background-add-tile,
+.bg-aspect-add-tile {
+  border: 1px solid #cfd7e4;
+  border-style: solid;
+  border-radius: 9px;
+  background: #fff;
+  color: var(--brand);
+  box-shadow: 0 2px 7px rgba(16, 24, 40, .06);
+  overflow: hidden;
+}
+.bg-background-add-tile:hover:not(:disabled),
+.bg-aspect-add-tile:hover:not(:disabled) {
+  border-color: #cfd7e4;
+  background: var(--control-hover);
+}
+.bg-background-add-tile:hover:not(:disabled) .bg-background-add-preview {
+  outline: none;
+  outline-offset: 0;
+  background: var(--control-hover);
+}
+.bg-background-add-preview .tool-symbol {
+  width: 22px;
+  height: 22px;
+  color: var(--brand);
+}
+.bg-aspect-add-tile {
+  display: grid;
+  place-items: center;
+  min-width: 0;
+  min-height: 44px;
+  padding: 6px 4px;
+}
+.bg-aspect-add-tile .tool-symbol {
+  width: 20px;
+  height: 20px;
 }
 .bg-aspect-tile-grid button {
   min-width: 0;
