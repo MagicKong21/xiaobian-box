@@ -7,7 +7,7 @@
   <meta name="theme-color" content="#ffffff">
   <title>小编工具箱</title>
   <link rel="icon" type="image/png" href="./assets/toolbox-icon.png">
-  <link rel="stylesheet" href="./styles.css?v=20260824-compact-context-menu">
+  <link rel="stylesheet" href="./styles.css?v=20260918-screen-workflow">
 </head>
 <body>
   <nav class="tabs" aria-label="工具导航">
@@ -256,6 +256,15 @@
                 <span class="bg-effect-control-heading"><span>圆角大小</span><strong id="bgEffectRoundRadiusValue">32 px</strong></span>
                 <input id="bgEffectRoundRadius" type="range" value="32" min="0" max="128" step="1" disabled>
               </label>
+              <div class="bg-effect-control bg-effect-corners">
+                <span class="bg-effect-control-heading"><span>圆角位置</span><strong id="bgEffectCornersValue">四角均为圆角</strong></span>
+                <div id="bgEffectCorners" class="bg-corner-grid" role="group" aria-label="圆角位置">
+                  <button type="button" data-bg-corner="tl" disabled>左上</button>
+                  <button type="button" data-bg-corner="tr" disabled>右上</button>
+                  <button type="button" data-bg-corner="bl" disabled>左下</button>
+                  <button type="button" data-bg-corner="br" disabled>右下</button>
+                </div>
+              </div>
               <label class="bg-effect-control bg-effect-size">
                 <span class="bg-effect-control-heading"><span>图片缩放</span><strong id="bgEffectScaleValue">—</strong></span>
                 <input id="bgEffectScale" type="range" value="90" min="10" max="500" step="1" disabled>
@@ -302,7 +311,7 @@
                   </div>
                 </section>
                 <section class="bg-background-section" aria-labelledby="bgWallpaperTitle">
-                  <h3 id="bgWallpaperTitle">macOS 壁纸</h3>
+                  <h3 id="bgWallpaperTitle">系统壁纸</h3>
                   <div id="bgWallpaperChoices" class="bg-background-tile-grid"></div>
                 </section>
                 <section class="bg-background-section bg-aspect-section" aria-labelledby="bgAspectTitle">
@@ -370,11 +379,15 @@
               </div>
               <div id="bgAnnotationBlurControls" class="bg-annotation-control" hidden>
                 <label class="bg-effect-switch-row"><input id="bgAnnotationBlurShadow" type="checkbox"> 阴影效果</label>
-                <span class="bg-effect-control-heading"><span>模糊强度</span><strong id="bgAnnotationBlurStrengthValue">16 px</strong></span>
-                <input id="bgAnnotationBlurStrength" type="range" min="2" max="40" value="16">
+                <span class="bg-effect-control-heading"><span>模糊强度</span><strong id="bgAnnotationBlurStrengthValue">6 px</strong></span>
+                <input id="bgAnnotationBlurStrength" type="range" min="1" max="18" value="6">
               </div>
               <div id="bgAnnotationNumberControls" class="bg-annotation-control" hidden>
                 <label class="bg-effect-switch-row"><input id="bgAnnotationNumberShadow" type="checkbox"> 阴影效果</label>
+                <label class="bg-annotation-number-value" for="bgAnnotationNumberInput">
+                  <span>序号数字</span>
+                  <input id="bgAnnotationNumberInput" type="number" min="1" step="1" inputmode="numeric" value="1">
+                </label>
                 <span class="bg-effect-control-heading"><span>序号大小</span><span class="bg-annotation-value-actions"><button id="bgAnnotationNumberReset" type="button" aria-label="恢复默认大小" title="恢复默认大小">↻</button><strong id="bgAnnotationNumberSizeValue">110 px</strong></span></span>
                 <input id="bgAnnotationNumberSize" type="range" min="40" max="240" value="110" step="2">
                 <span class="bg-effect-control-heading"><span>序号颜色</span></span>
@@ -452,9 +465,9 @@
           <div id="annotationBlurControls" class="annotation-blur-controls" hidden>
             <label for="annotationBlurStrength">
               <span>模糊强度</span>
-              <strong id="annotationBlurStrengthValue">16px</strong>
+              <strong id="annotationBlurStrengthValue">6px</strong>
             </label>
-            <input id="annotationBlurStrength" type="range" min="2" max="40" step="1" value="16">
+            <input id="annotationBlurStrength" type="range" min="1" max="18" step="1" value="6">
           </div>
           <div id="annotationMagnifierControls" class="annotation-magnifier-controls" hidden>
             <label for="annotationMagnifierColor">颜色
@@ -504,6 +517,7 @@
             <button id="imageEditorRemoveMode" type="button" aria-label="区段删除" title="区段删除 (R)" disabled><span class="tool-symbol tool-symbol-remove-section"></span><small>删段</small></button>
             <button id="imageEditorCropMode" type="button" aria-label="画布裁切" title="画布裁切 (C)" disabled><span class="tool-symbol tool-symbol-crop"></span><small>裁切</small></button>
             <button id="imageEditorGradientMode" type="button" aria-label="渐变透明" title="渐变透明 (G)" disabled><span class="tool-symbol tool-symbol-gradient"></span><small>渐变</small></button>
+            <button id="imageEditorScreenMode" type="button" aria-label="换屏" title="换屏 (H)" disabled><span class="tool-symbol tool-symbol-screen"></span><small>换屏</small></button>
             <button id="imageEditorInpaintMode" type="button" aria-label="局部修复" title="局部修复 (E)" disabled><span class="tool-symbol tool-symbol-eraser"></span><small>修复</small></button>
             <button id="imageEditorCoverMode" type="button" aria-label="智能覆盖" title="智能覆盖" disabled><span class="tool-symbol tool-symbol-cover"></span><small>覆盖</small></button>
             <div class="image-editor-more">
@@ -535,6 +549,41 @@
             <label id="imageEditorBlendWidthField">融合宽度 <input id="imageEditorBlendWidth" type="range" min="20" max="600" value="160"></label>
             <button id="imageEditorApplyComposite" class="primary" type="button" disabled>应用合成</button>
           </div>
+          <div id="imageEditorScreenControls" class="image-editor-composite-controls" hidden>
+            <input id="imageEditorScreenFile" type="file" accept="image/*" hidden>
+            <button id="imageEditorScreenFileButton" class="image-editor-screen-import" type="button"><span class="tool-symbol tool-symbol-import" aria-hidden="true"></span><span>导入要贴的截图</span></button>
+            <label class="bg-effect-control">
+              <span class="bg-effect-control-heading"><span>光照匹配</span><strong id="imageEditorScreenLightValue">45%</strong></span>
+              <input id="imageEditorScreenLight" type="range" min="0" max="100" value="45">
+            </label>
+            <label class="bg-effect-control">
+              <span class="bg-effect-control-heading"><span>边缘羽化</span><strong id="imageEditorScreenFeatherValue">1.5 px</strong></span>
+              <input id="imageEditorScreenFeather" type="range" min="0" max="8" step="0.5" value="1.5">
+            </label>
+            <label class="bg-effect-control">
+              <span class="bg-effect-control-heading"><span>圆角半径</span><strong id="imageEditorScreenRadiusValue">4 px</strong></span>
+              <input id="imageEditorScreenRadius" type="range" min="0" max="40" step="1" value="4">
+            </label>
+            <label class="bg-effect-control">
+              <span class="bg-effect-control-heading"><span>不透明度</span><strong id="imageEditorScreenOpacityValue">100%</strong></span>
+              <input id="imageEditorScreenOpacity" type="range" min="0" max="100" value="100">
+            </label>
+            <label class="bg-effect-control">
+              <span class="bg-effect-control-heading"><span>填充方式</span></span>
+              <select id="imageEditorScreenFit">
+                <option value="stretch">拉伸铺满</option>
+                <option value="contain">等比居中</option>
+              </select>
+            </label>
+            <label class="bg-effect-switch-row"><input id="imageEditorScreenNotch" type="checkbox" checked> 保留屏幕刘海</label>
+            <label class="bg-effect-switch-row"><input id="imageEditorScreenSnap" type="checkbox" checked> 松手自动吸附边缘</label>
+            <label class="bg-effect-switch-row"><input id="imageEditorScreenHideOverlay" type="checkbox"> 隐藏角点与选框</label>
+            <label class="bg-effect-switch-row"><input id="imageEditorScreenHideShot" type="checkbox"> 隐藏贴图只看原图</label>
+            <div class="image-editor-screen-actions">
+              <button id="imageEditorScreenReset" type="button" disabled>重新定位</button>
+              <button id="imageEditorScreenRefine" type="button" disabled>吸附精修</button>
+            </div>
+          </div>
           <div id="imageEditorInpaintControls" class="image-editor-composite-controls" hidden>
             <label>修复半径 <strong id="imageEditorInpaintSizeValue">40 px</strong></label>
             <input id="imageEditorInpaintSize" type="range" min="10" max="200" step="1" value="40">
@@ -550,6 +599,10 @@
           </div>
           <p id="imageEditorInspectorHint" class="image-editor-inspector-hint">激活分隔、融合、局部修复或智能覆盖等工具后，在这里调节参数。</p>
         </aside>
+        <div id="imageEditorTabBar" class="bg-canvas-tab-bar" hidden>
+          <div id="imageEditorTabs" class="bg-canvas-tabs" role="tablist" aria-label="编辑画布标签页"></div>
+          <button id="imageEditorAddTabButton" class="bg-canvas-tab-add" type="button" aria-label="新建空白画布" title="新建空白画布"><span class="bg-canvas-tab-add-symbol" aria-hidden="true">＋</span></button>
+        </div>
         <div id="imageEditorStage" class="image-editor-stage" tabindex="0" aria-label="高级编辑画布">
           <canvas id="imageEditorCanvas"></canvas>
           <div id="imageEditorSelectionOverlay" class="image-editor-selection-overlay" hidden>
@@ -574,6 +627,17 @@
               <button id="imageEditorApplyGradient" class="selection-confirm" type="button" aria-label="应用渐变" title="应用渐变">✓</button>
               <button id="imageEditorCancelGradient" class="selection-cancel" type="button" aria-label="取消渐变" title="取消渐变">×</button>
             </div>
+          </div>
+          <svg id="imageEditorScreenOverlay" class="image-editor-screen-overlay" hidden>
+            <polygon id="imageEditorScreenPolygon" points=""></polygon>
+            <g id="imageEditorScreenHandles"></g>
+          </svg>
+          <div id="imageEditorScreenOverlayActions" class="image-editor-selection-actions image-editor-screen-overlay-actions" hidden>
+            <button id="imageEditorConfirmScreen" class="selection-confirm" type="button" aria-label="确认换屏" title="确认换屏">✓</button>
+            <button id="imageEditorCancelScreen" class="selection-cancel" type="button" aria-label="取消换屏" title="取消换屏">×</button>
+          </div>
+          <div id="imageEditorScreenMagnifier" class="image-editor-screen-magnifier" hidden>
+            <canvas width="170" height="170"></canvas>
           </div>
           <div id="imageEditorSnapGuides" class="image-editor-snap-guides" hidden></div>
           <div id="imageEditorPlaceholder" class="annotation-placeholder">
@@ -696,6 +760,6 @@
 
   <div class="tool-version"><img src="./assets/toolbox-icon.png" alt="" aria-hidden="true">小编工具箱</div>
 
-  <script src="./app.js?v=20260824-layer-scale-500"></script>
+  <script src="./app.js?v=20260918-screen-workflow"></script>
 </body>
 </html>

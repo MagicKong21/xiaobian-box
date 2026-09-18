@@ -871,6 +871,25 @@ body.is-dragging-bg-material * {
   white-space: nowrap;
 }
 .bg-effect-toolbar.is-disabled .bg-effect-control strong { color: #98a2b3; }
+/* 圆角位置：四个角各一个开关，点亮＝该角有圆角，熄灭＝该角走直角。 */
+.bg-corner-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+.bg-corner-grid button {
+  min-height: 32px;
+  padding: 5px 8px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 600;
+}
+.bg-corner-grid button:disabled {
+  cursor: not-allowed;
+  color: #98a2b3;
+  border-color: #e4e7ec;
+  background: #f2f4f7;
+}
 .blue-bg-size-field {
   display: grid;
   grid-template-columns: auto minmax(120px, 1fr) 48px;
@@ -1032,6 +1051,38 @@ body.is-dragging-bg-material * {
   padding: 0;
   accent-color: var(--brand);
 }
+.bg-annotation-number-value {
+  display: grid;
+  grid-template-columns: 1fr 84px;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 600;
+}
+.bg-annotation-number-value input {
+  min-width: 0;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.annotation-number-inline-editor {
+  position: absolute;
+  z-index: 12;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  border: 2px solid #ffffff;
+  border-radius: 50%;
+  outline: 2px solid #1677ff;
+  background: var(--number-color, #ff5a52);
+  color: #ffffff;
+  text-align: center;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", MiSans, sans-serif;
+  font-weight: 450;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  touch-action: none;
+}
+.annotation-number-inline-editor[hidden] { display: none; }
 .bg-annotation-color-row {
   display: flex;
   align-items: center;
@@ -1431,6 +1482,7 @@ body.is-dragging-bg-material * {
 .tool-symbol-split { --tool-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.7'%3E%3Crect x='3.5' y='4' width='17' height='16' rx='2'/%3E%3Cpath d='m8 20 8-16'/%3E%3C/svg%3E"); }
 .tool-symbol-blend { --tool-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.6'%3E%3Ccircle cx='9' cy='12' r='6'/%3E%3Ccircle cx='15' cy='12' r='6'/%3E%3C/svg%3E"); }
 .tool-symbol-window { --tool-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.7'%3E%3Crect x='3.5' y='4.5' width='17' height='15' rx='2'/%3E%3Cpath d='M4 8h16'/%3E%3Ccircle cx='7' cy='6.3' r='.6' fill='black' stroke='none'/%3E%3C/svg%3E"); }
+.tool-symbol-screen { --tool-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.7'%3E%3Crect x='2.5' y='4.5' width='19' height='13' rx='2'/%3E%3Cpath d='M8 20.5h8'/%3E%3Cpath d='M7.6 14.2 10.4 8.6h6l-2.8 5.6Z'/%3E%3C/svg%3E"); }
 .canvas-empty-import {
   z-index: 4;
   min-width: 116px;
@@ -1646,8 +1698,11 @@ body.is-dragging-bg-material * {
   position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr) 240px auto;
+  grid-template-rows: auto minmax(0, 1fr) auto;
   gap: 0 var(--page-gap);
-  min-height: calc(100vh - 97px);
+  /* 定高（而不是 min-height）：画布区行才能像「美化 / 标注」那样按剩余空间收口，
+     不会被画布的自然高度顶大整页。 */
+  height: calc(100vh - 97px);
   padding: 0;
   border: 0;
   border-radius: 0;
@@ -1669,7 +1724,8 @@ body.is-dragging-bg-material * {
 .image-editor-actions {
   position: static;
   grid-column: 3;
-  grid-row: 1;
+  /* 跨过标签栏那一行：工具栏顶端和「美化 / 标注」一样与标签栏齐平。 */
+  grid-row: 1 / 3;
   align-self: start;
   display: flex;
   flex-direction: column;
@@ -1699,14 +1755,16 @@ body.is-dragging-bg-material * {
 }
 .image-editor-inspector {
   grid-column: 2;
-  grid-row: 1;
+  /* 跨过标签栏那一行：扩展区顶端与「美化 / 标注」一致，从标签栏顶端起。 */
+  grid-row: 1 / 3;
   align-self: start;
   display: grid;
   align-content: start;
   gap: 0;
   box-sizing: border-box;
   width: 240px;
-  max-height: calc(100vh - 160px);
+  /* 上限＝这一格（标签栏行＋画布区行）的高度，超出时面板内部滚动。 */
+  max-height: 100%;
   padding: 6px 9px;
   border: 1px solid var(--line);
   border-radius: 10px;
@@ -1771,6 +1829,113 @@ body.is-dragging-bg-material * {
   font-weight: 400;
   color: var(--muted);
 }
+/* —— 换屏 —— */
+.image-editor-screen-overlay {
+  position: absolute;
+  z-index: 7;
+  pointer-events: none;
+  overflow: visible;
+}
+.image-editor-screen-overlay[hidden] { display: none; }
+.image-editor-screen-overlay polygon {
+  fill: rgba(22, 119, 255, .07);
+  stroke: var(--brand);
+  stroke-width: 1.5;
+  stroke-dasharray: 6 4;
+  vector-effect: non-scaling-stroke;
+}
+.image-editor-screen-overlay polygon.is-complete { stroke-dasharray: none; }
+.image-editor-screen-overlay circle {
+  fill: #fff;
+  stroke: var(--brand);
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+}
+.image-editor-screen-overlay circle.is-active { fill: var(--brand); }
+.image-editor-screen-overlay text {
+  fill: var(--brand-dark);
+  font-size: 11px;
+  font-weight: 700;
+  paint-order: stroke;
+  stroke: #fff;
+  stroke-width: 3;
+}
+.image-editor-screen-magnifier {
+  position: absolute;
+  z-index: 40;
+  width: 170px;
+  height: 170px;
+  border-radius: 50%;
+  border: 2px solid var(--brand);
+  box-shadow: 0 6px 20px rgba(16, 24, 40, .28);
+  overflow: hidden;
+  background: #fff;
+  pointer-events: none;
+}
+.image-editor-screen-magnifier[hidden] { display: none; }
+.image-editor-screen-magnifier canvas { display: block; width: 100%; height: 100%; }
+/* 换屏面板复用背景 inspector 的控件类（bg-effect-control / bg-effect-switch-row），
+   但通用规则 `.image-editor-composite-controls label` 是给「文字 + 滑杆两端对齐」
+   的旧式行写的，会覆盖掉这些类。这里用面板 id 重新校准，作用域只限换屏面板。
+   注意全站的 `input { width: 100% }` 会把复选框也撑宽，必须显式还原 width: auto。 */
+#imageEditorScreenControls label.bg-effect-control {
+  display: grid;
+  /* 必须显式给列宽：隐式 auto 列会缩到滑杆的固有宽度（135px），
+     width: 100% 参照的就是那条窄列，滑杆会短一大截。 */
+  grid-template-columns: minmax(0, 1fr);
+  gap: 7px;
+  align-items: stretch;
+  padding: 9px 3px;
+  border-bottom: 1px solid #eef1f5;
+  font-weight: 600;
+}
+#imageEditorScreenControls label.bg-effect-switch-row {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 7px;
+  padding: 8px 3px;
+  border-bottom: 1px solid #eef1f5;
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+#imageEditorScreenControls label.bg-effect-switch-row input[type="checkbox"] {
+  flex: 0 0 auto;
+  width: auto;
+  margin: 0;
+  accent-color: var(--brand);
+}
+#imageEditorScreenControls input[type="range"] {
+  flex: none;
+  width: 100%;
+  padding: 0;
+  accent-color: var(--brand);
+}
+#imageEditorScreenControls select {
+  width: 100%;
+  max-width: none;
+}
+#imageEditorScreenControls > button.image-editor-screen-import {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  margin: 4px 0 6px;
+}
+.image-editor-screen-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+.image-editor-screen-actions button { flex: 1; }
+/* 和「美化 / 标注」一致：标签栏是画布上方的独立区域。 */
+#imageEditorTabBar {
+  grid-column: 1;
+  grid-row: 1;
+  margin: 0 0 10px;
+}
 .cover-shape-toggle {
   display: flex;
   gap: 6px;
@@ -1809,12 +1974,13 @@ body.is-dragging-bg-material * {
 .image-editor-stage {
   position: relative;
   grid-column: 1;
-  grid-row: 1;
+  grid-row: 2;
   display: grid;
   place-items: safe center;
   width: 100%;
-  min-height: 604px;
-  max-height: calc(100vh - 250px);
+  /* 和「美化 / 标注」的画布区一样撑满剩余空间：上沿与扩展区同高，下沿与状态栏齐平。 */
+  min-height: 0;
+  max-height: none;
   overflow: auto;
   padding: 72px;
   border: 1px dashed #c7ced9;
@@ -1836,7 +2002,8 @@ body.is-dragging-bg-material * {
 .image-editor-stage canvas {
   display: none;
   max-width: 100%;
-  max-height: calc(100vh - 300px);
+  /* 与「美化 / 标注」画布同一套高度上限。 */
+  max-height: calc(100vh - 290px);
   width: auto;
   height: auto;
   touch-action: none;
@@ -1868,11 +2035,23 @@ body.is-dragging-bg-material * {
   text-align: center;
 }
 .image-editor-box > .annotation-status {
-  grid-row: 2;
+  grid-row: 3;
 }
 
+.image-editor-screen-overlay-actions {
+  position: absolute;
+  z-index: 10;
+  display: flex;
+  gap: 6px;
+  pointer-events: auto;
+  transform: translate(-100%, 12px);
+}
+.image-editor-screen-overlay-actions[hidden] { display: none; }
+
+/* flex 让外框高度就是按钮高度，弹窗的垂直居中以它为基准。 */
 .image-editor-more {
   position: relative;
+  display: flex;
 }
 .image-editor-more > button {
   position: relative;
@@ -1880,7 +2059,9 @@ body.is-dragging-bg-material * {
 }
 .image-editor-more-menu {
   position: absolute;
-  top: 0;
+  /* 水平中线与「更多工具」按钮对齐（top 50% + 自身高度一半回退）。 */
+  top: 50%;
+  transform: translateY(-50%);
   right: calc(100% + 10px);
   z-index: 20;
   display: flex;
@@ -3315,7 +3496,7 @@ button.danger:disabled {
   .bg-effect-toolbar { width: 100%; }
   .bg-background-panel { width: 100%; }
   .bg-mode-toolbar { flex-direction: row; border-top: 1px solid var(--line); border-left: 0; }
-  .image-editor-box { display: flex; min-height: 0; flex-direction: column; gap: 10px; }
+  .image-editor-box { display: flex; height: auto; min-height: 0; flex-direction: column; gap: 10px; }
   .image-editor-actions { order: 0; flex-direction: row; align-self: stretch; }
   .image-editor-inspector { order: 1; width: 100%; max-height: none; }
   .image-editor-stage { order: 2; min-height: 360px; }

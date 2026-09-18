@@ -73,7 +73,7 @@ const BG_GRADIENT_PRESETS = [
 let customBgGradients = [];
 let customBgWallpapers = [];
 let customBgAspects = [];
-const MACOS_WALLPAPERS = [
+const SYSTEM_WALLPAPERS = [
   { id: "macos-11", label: "Big Sur", url: "./assets/wallpapers/macos-11-big-sur.jpg", source: "512 Pixels" },
   { id: "macos-12", label: "Monterey", url: "./assets/wallpapers/macos-12-monterey.jpg", source: "AppleWalls" },
   { id: "macos-13", label: "Ventura", url: "./assets/wallpapers/macos-13-ventura.webp", source: "AppleWalls" },
@@ -81,6 +81,8 @@ const MACOS_WALLPAPERS = [
   { id: "macos-15", label: "Sequoia", url: "./assets/wallpapers/macos-15-sequoia.webp", source: "AppleWalls" },
   { id: "macos-26", label: "Tahoe", url: "./assets/wallpapers/macos-26-tahoe.jpg", source: "512 Pixels" },
   { id: "macos-27", label: "Golden Gate", url: "./assets/wallpapers/macos-27-golden-gate.jpg", source: "Basic Apple Guy" },
+  { id: "windows-10", label: "Windows 10", url: "./assets/wallpapers/windows-10.jpg", source: "Microsoft" },
+  { id: "windows-11", label: "Windows 11", url: "./assets/wallpapers/windows-11.jpg", source: "Microsoft" },
 ];
 let marchingAntsOffset = 0;
 function createBgCanvasState() {
@@ -109,6 +111,8 @@ function createBgCanvasState() {
   baseDisplayWidth: 0,
   baseDisplayHeight: 0,
   gestureStartZoom: 1,
+  scrollLeft: 0,
+  scrollTop: 0,
   inspectorMode: "background",
   toolMode: "background",
   snapGuides: { vertical: [], horizontal: [] },
@@ -191,6 +195,10 @@ function switchBgTab(tabId) {
   if (previous) {
     previous.history = bgHistory;
     previous.historyIndex = bgHistoryIndex;
+    // 记下离开时的视图位置，切回来时一并还原。
+    const stage = $("#blueBgStage");
+    previous.canvas.scrollLeft = stage.scrollLeft;
+    previous.canvas.scrollTop = stage.scrollTop;
   }
   activeBgTabId = target.id;
   blueBgState = target.canvas;
@@ -201,13 +209,26 @@ function switchBgTab(tabId) {
   renderBgTabs();
   $("#blueBgEditor").hidden = false;
   $("#bgPreview").hidden = true;
-  ensureUnifiedBgBackground(blueBgState.layers[0]?.image || null)
+  ensureUnifiedBgBackground(null, target.canvas, { preserveCanvasSize: true })
     .then(() => {
+      if (activeBgTabId !== target.id) return;
       updateBlueBgControls();
       renderBlueBgCanvas();
-      resetBlueBgZoom();
+      // 切回本画布时恢复该标签自己的缩放比例，不重置成 100%。
+      resetBlueBgZoom(target.canvas.zoom);
+      // 缩放尺寸在 resetBlueBgZoom 的下一帧才落到 DOM，滚动位置要再等一帧还原。
+      requestAnimationFrame(() => {
+        if (activeBgTabId !== target.id) return;
+        const stage = $("#blueBgStage");
+        stage.scrollLeft = target.canvas.scrollLeft || 0;
+        stage.scrollTop = target.canvas.scrollTop || 0;
+      });
       if (!blueBgState.layers.length) {
         blueBgStatus("当前画布为空：点击左侧素材库图片加入，或导入新图片。");
+      } else {
+        blueBgStatus(
+          `画布缩放 ${Math.round(target.canvas.zoom * 100)}% · 共 ${blueBgState.layers.length} 张图片`
+        );
       }
     })
     .catch(err => blueBgStatus(err.message));
@@ -248,27 +269,167 @@ function syncActiveBgTabTitle() {
 }
 
 let bgAnnotationState = createAnnotationState("bg");
-const imageEditorState = {
-  documentCanvas: document.createElement("canvas"),
-  sourceName: "",
-  hasImage: false,
-  mode: "view",
-  selection: null,
-  interaction: null,
-  gradient: null,
-  snapGuides: { vertical: [], horizontal: [] },
-  history: [],
-  historyIndex: -1,
-  zoom: 1,
-  baseDisplayWidth: 0,
-  baseDisplayHeight: 0,
-  gestureStartZoom: 1,
-  secondImage: null,
-  sourceBgMaterialIndex: null,
-  sourceBgLayerId: null,
-  inpaintSize: 40,
-  coverShape: "rect",
-};
+// 高级编辑也支持多画布标签：每个标签持有一份完整状态（含历史与缩放），
+// imageEditorState 始终指向当前标签，其余代码照旧读写它即可。
+function createImageEditorState() {
+  return {
+    documentCanvas: document.createElement("canvas"),
+    sourceName: "",
+    hasImage: false,
+    mode: "view",
+    selection: null,
+    interaction: null,
+    gradient: null,
+    snapGuides: { vertical: [], horizontal: [] },
+    history: [],
+    historyIndex: -1,
+    zoom: 1,
+    baseDisplayWidth: 0,
+    baseDisplayHeight: 0,
+    gestureStartZoom: 1,
+    scrollLeft: 0,
+    scrollTop: 0,
+    secondImage: null,
+    sourceBgMaterialIndex: null,
+    sourceBgLayerId: null,
+    inpaintSize: 40,
+    coverShape: "rect",
+    screen: null,
+  };
+}
+
+const IMAGE_EDITOR_TAB_LIMIT = 7;
+const imageEditorTabList = [];
+let activeImageEditorTabId = null;
+let imageEditorTabSequence = 0;
+let imageEditorState = createImageEditorState();
+
+function currentImageEditorTab() {
+  return imageEditorTabList.find(tab => tab.id === activeImageEditorTabId) || null;
+}
+
+function imageEditorTabTitle(tab) {
+  return tab.state.sourceName || `画布 ${imageEditorTabList.indexOf(tab) + 1}`;
+}
+
+function createImageEditorTab({ activate = true } = {}) {
+  if (imageEditorTabList.length >= IMAGE_EDITOR_TAB_LIMIT) {
+    imageEditorStatus(`最多支持 ${IMAGE_EDITOR_TAB_LIMIT} 个画布标签。`);
+    return null;
+  }
+  imageEditorTabSequence += 1;
+  const tab = { id: `image-editor-tab-${imageEditorTabSequence}`, state: createImageEditorState() };
+  imageEditorTabList.push(tab);
+  if (activate) switchImageEditorTab(tab.id);
+  else renderImageEditorTabs();
+  return tab;
+}
+
+function closeImageEditorTab(tabId) {
+  const index = imageEditorTabList.findIndex(tab => tab.id === tabId);
+  if (index < 0) return;
+  const wasActive = imageEditorTabList[index].id === activeImageEditorTabId;
+  imageEditorTabList.splice(index, 1);
+  if (!imageEditorTabList.length) {
+    activeImageEditorTabId = null;
+    createImageEditorTab();
+    return;
+  }
+  if (wasActive) {
+    const next = imageEditorTabList[Math.min(index, imageEditorTabList.length - 1)];
+    switchImageEditorTab(next.id);
+    return;
+  }
+  renderImageEditorTabs();
+}
+
+function switchImageEditorTab(tabId) {
+  const target = imageEditorTabList.find(tab => tab.id === tabId);
+  if (!target) return;
+  if (target.id === activeImageEditorTabId) {
+    renderImageEditorTabs();
+    return;
+  }
+  const previous = currentImageEditorTab();
+  if (previous) {
+    const stage = $("#imageEditorStage");
+    previous.state.scrollLeft = stage.scrollLeft;
+    previous.state.scrollTop = stage.scrollTop;
+  }
+  activeImageEditorTabId = target.id;
+  imageEditorState = target.state;
+  renderImageEditorTabs();
+  syncImageEditorTabView(target.id);
+}
+
+// 切换标签后把画布、缩放与控件状态整体切到当前标签。
+function syncImageEditorTabView(tabId = activeImageEditorTabId) {
+  const stage = $("#imageEditorStage");
+  const canvas = imageEditorCanvas();
+  stage.classList.toggle("has-image", imageEditorState.hasImage);
+  stage.dataset.mode = imageEditorState.mode;
+  if (imageEditorState.hasImage) {
+    renderImageEditorCanvas();
+    resetImageEditorZoom(imageEditorState.zoom);
+  } else {
+    canvas.width = 0;
+    canvas.height = 0;
+    canvas.style.width = "";
+    canvas.style.height = "";
+    canvas.style.maxWidth = "";
+    canvas.style.maxHeight = "";
+    imageEditorState.baseDisplayWidth = 0;
+    imageEditorState.baseDisplayHeight = 0;
+    stage.classList.remove("at-base-zoom");
+    $("#imageEditorCanvasZoom").value = "100";
+    $("#imageEditorCanvasZoomValue").textContent = "100%";
+  }
+  updateImageEditorControls();
+  syncImageEditorOverlays();
+  // 换屏的角点覆盖层与放大镜属于当前标签，切换时要一起刷新/收起。
+  imageEditorScreenSyncOverlay();
+  imageEditorScreenHideMagnifier();
+  requestAnimationFrame(() => {
+    if (activeImageEditorTabId !== tabId) return;
+    stage.scrollLeft = imageEditorState.scrollLeft || 0;
+    stage.scrollTop = imageEditorState.scrollTop || 0;
+  });
+}
+
+function renderImageEditorTabs() {
+  const wrap = $("#imageEditorTabs");
+  const bar = $("#imageEditorTabBar");
+  if (!wrap || !bar) return;
+  bar.hidden = false;
+  wrap.innerHTML = "";
+  imageEditorTabList.forEach(tab => {
+    const tabButton = document.createElement("div");
+    tabButton.className = `bg-canvas-tab${tab.id === activeImageEditorTabId ? " active" : ""}`;
+    tabButton.dataset.imageEditorTabId = tab.id;
+    tabButton.setAttribute("role", "tab");
+    tabButton.setAttribute("aria-selected", tab.id === activeImageEditorTabId ? "true" : "false");
+    tabButton.setAttribute("aria-label", imageEditorTabTitle(tab));
+    tabButton.title = imageEditorTabTitle(tab);
+    const label = document.createElement("span");
+    label.className = "bg-canvas-tab-label";
+    label.textContent = imageEditorTabTitle(tab);
+    tabButton.appendChild(label);
+    const closeButton = document.createElement("button");
+    closeButton.type = "button";
+    closeButton.className = "bg-canvas-tab-close";
+    closeButton.dataset.imageEditorTabClose = tab.id;
+    closeButton.setAttribute("aria-label", `关闭 ${imageEditorTabTitle(tab)}`);
+    closeButton.textContent = "×";
+    tabButton.appendChild(closeButton);
+    wrap.appendChild(tabButton);
+  });
+}
+
+function syncActiveImageEditorTabTitle() {
+  if (!currentImageEditorTab()) return;
+  renderImageEditorTabs();
+}
+
 function createAnnotationState(host = "annotation") {
   return {
   host,
@@ -281,7 +442,7 @@ function createAnnotationState(host = "annotation") {
   selectedPart: null,
   numberSize: ANNOTATION_NUMBER_SIZE,
   numberColor: "#ff5a52",
-  blurStrength: 16,
+  blurStrength: 6,
   maskColor: "#98b2c0",
   maskRound: false,
   maskRoundRadius: 16,
@@ -299,6 +460,7 @@ function createAnnotationState(host = "annotation") {
   baseDisplayHeight: 0,
   gestureStartZoom: 1,
   editingNumberId: null,
+  editingNumberOriginal: null,
   history: [],
   historyIndex: -1,
   };
@@ -581,6 +743,7 @@ function showTab(id) {
   if ($("#bgExportButton")) $("#bgExportButton").hidden = id !== "bg";
   if ($("#imageEditorExport")) $("#imageEditorExport").hidden = id !== "imageEditor";
   if (id === "bg") requestAnimationFrame(syncBgMaterialColumnWidth);
+  if (id === "imageEditor") scheduleImageEditorInspectorAlign();
   if (id === "distribution") scheduleDistributionScrollAnchors();
   if (id === "distribution" && !state.distribution.loaded && !state.distribution.loading) {
     loadDistributionTasks().catch(err => {
@@ -1471,13 +1634,19 @@ function applyBlueBgZoom(zoom) {
   if (!blueBgState.canvasWidth || !blueBgState.baseDisplayWidth) return;
   const canvas = blueBgCanvas();
   blueBgState.zoom = Math.max(0.5, Math.min(20, zoom));
-  canvas.style.width = `${blueBgState.baseDisplayWidth * blueBgState.zoom}px`;
-  canvas.style.height = `${blueBgState.baseDisplayHeight * blueBgState.zoom}px`;
+  // 宽、高缓存可能来自标签切换前的异步布局。不能分别套用两个缓存值，
+  // 否则在下一次完整重绘前会把 canvas 和标注层压扁。统一换算为同一个
+  // 显示比例，任何时序下都严格保持画布固有宽高比。
+  const baseScale = Math.min(
+    blueBgState.baseDisplayWidth / Math.max(1, canvas.width),
+    blueBgState.baseDisplayHeight / Math.max(1, canvas.height)
+  );
+  const displayScale = baseScale * blueBgState.zoom;
+  canvas.style.width = `${canvas.width * displayScale}px`;
+  canvas.style.height = `${canvas.height * displayScale}px`;
   canvas.style.imageRendering = blueBgState.zoom >= 4 ? "pixelated" : "auto";
-  const annotationOverlay = $("#bgAnnotationCanvas");
+  const annotationOverlay = syncBgAnnotationBox(canvas);
   if (annotationOverlay) {
-    annotationOverlay.style.width = canvas.style.width;
-    annotationOverlay.style.height = canvas.style.height;
     annotationOverlay.style.imageRendering = canvas.style.imageRendering;
   }
   $("#blueBgStage").classList.toggle("at-base-zoom", blueBgState.zoom <= 1.001);
@@ -1499,8 +1668,16 @@ function applyBlueBgZoom(zoom) {
   });
 }
 
-function resetBlueBgZoom() {
+// 重新测量「100% 时的显示尺寸」，再把画布恢复到 targetZoom。
+// 切换画布标签时会带上该标签自己的缩放比例，避免切回来缩放被重置。
+// preserveView：重新测量期间画布会先缩回原始尺寸，浏览器会把滚动位置夹小，
+// 撤销 / 重做回放历史时用它把用户的画面位置原样放回去。
+function resetBlueBgZoom(targetZoom = 1, { preserveView = false } = {}) {
+  const state = blueBgState;
   const canvas = blueBgCanvas();
+  const stage = $("#blueBgStage");
+  const scrollLeft = preserveView ? stage?.scrollLeft || 0 : 0;
+  const scrollTop = preserveView ? stage?.scrollTop || 0 : 0;
   canvas.style.width = "";
   canvas.style.height = "";
   canvas.style.maxWidth = "";
@@ -1512,17 +1689,28 @@ function resetBlueBgZoom() {
     annotationOverlay.style.maxWidth = "";
     annotationOverlay.style.maxHeight = "";
   }
-  blueBgState.zoom = 1;
-  blueBgState.baseDisplayWidth = 0;
-  blueBgState.baseDisplayHeight = 0;
+  const zoom = Math.max(0.5, Math.min(20, Number(targetZoom) || 1));
+  state.zoom = zoom;
+  state.baseDisplayWidth = 0;
+  state.baseDisplayHeight = 0;
   requestAnimationFrame(() => {
-    if (!blueBgState.canvasWidth) return;
+    if (state !== blueBgState || !state.canvasWidth) return;
     const rect = canvas.getBoundingClientRect();
-    blueBgState.baseDisplayWidth = rect.width;
-    blueBgState.baseDisplayHeight = rect.height;
+    const baseScale = Math.min(
+      rect.width / Math.max(1, canvas.width),
+      rect.height / Math.max(1, canvas.height)
+    );
+    state.baseDisplayWidth = canvas.width * baseScale;
+    state.baseDisplayHeight = canvas.height * baseScale;
     canvas.style.maxWidth = "none";
     canvas.style.maxHeight = "none";
-    applyBlueBgZoom(1);
+    // 标注层的约束要跟画布一起放开，否则它会被 CSS 的 max-height 压扁。
+    syncBgAnnotationBox(canvas);
+    applyBlueBgZoom(zoom);
+    if (preserveView && stage) {
+      stage.scrollLeft = scrollLeft;
+      stage.scrollTop = scrollTop;
+    }
   });
 }
 
@@ -1583,27 +1771,28 @@ function isCrossOriginImageSource(source) {
   }
 }
 
-function bgAspectRatioForMode(mode = blueBgState.aspectMode) {
+function bgAspectRatioForMode(mode = blueBgState.aspectMode, state = blueBgState) {
   if (mode === "blue") return 2000 / 1083;
-  if (mode === "default") return blueBgState.defaultAspect || 2000 / 1083;
+  if (mode === "default") return state.defaultAspect || 2000 / 1083;
   const preset = [...Object.values(BG_ASPECTS), ...customBgAspects].find(item => item.value === mode);
   return preset?.ratio || 2000 / 1083;
 }
 
-function setUnifiedBgCanvasSize(width, height) {
+function setUnifiedBgCanvasSize(width, height, state = blueBgState) {
+  state.canvasWidth = Math.max(320, Math.round(width));
+  state.canvasHeight = Math.max(240, Math.round(height));
+  if (state !== blueBgState) return;
   const canvas = blueBgCanvas();
-  blueBgState.canvasWidth = Math.max(320, Math.round(width));
-  blueBgState.canvasHeight = Math.max(240, Math.round(height));
-  canvas.width = blueBgState.canvasWidth;
-  canvas.height = blueBgState.canvasHeight;
+  canvas.width = state.canvasWidth;
+  canvas.height = state.canvasHeight;
   const stage = $("#blueBgStage");
   // 画布区保持与标注/编辑模块相同的固定工作区外观；真正的画布比例
   // 由 canvas 自身尺寸决定，不能把比例写到外层工作区上。
   if (stage) stage.style.removeProperty("aspect-ratio");
 }
 
-function updateUnifiedBgCanvasSize(firstImage = null) {
-  if (blueBgState.aspectMode === "default" && firstImage) {
+function updateUnifiedBgCanvasSize(firstImage = null, state = blueBgState) {
+  if (state.aspectMode === "default" && firstImage) {
     const sourceWidth = firstImage.naturalWidth || 1;
     const sourceHeight = firstImage.naturalHeight || 1;
     const normalizedScale = IMAGE_EXPORT_WIDTH / Math.max(sourceWidth, sourceHeight);
@@ -1626,30 +1815,35 @@ function updateUnifiedBgCanvasSize(firstImage = null) {
     const marginY = Math.max(32, Math.round(sourceWithShadow.height * 0.035));
     width = Math.max(width, sourceWithShadow.width + marginX * 2);
     height = Math.max(height, sourceWithShadow.height + marginY * 2);
-    blueBgState.defaultAspect = width / height;
+    state.defaultAspect = width / height;
   }
-  const ratio = bgAspectRatioForMode();
-  setUnifiedBgCanvasSize(2000, 2000 / ratio);
+  const ratio = bgAspectRatioForMode(state.aspectMode, state);
+  setUnifiedBgCanvasSize(2000, 2000 / ratio, state);
 }
 
-async function ensureUnifiedBgBackground(firstImage = null) {
-  updateUnifiedBgCanvasSize(firstImage);
-  if (blueBgState.backgroundType === "wallpaper" && !blueBgState.backgroundImage) {
-    const wallpaper = [...MACOS_WALLPAPERS, ...customBgWallpapers].find(item => item.id === blueBgState.backgroundImageName) || MACOS_WALLPAPERS[0];
-    blueBgState.backgroundImage = await loadImageSource(wallpaper.url);
-    blueBgState.backgroundImageName = wallpaper.id;
-    blueBgState.backgroundImageUrl = wallpaper.url;
+async function ensureUnifiedBgBackground(
+  firstImage = null,
+  state = blueBgState,
+  { preserveCanvasSize = false } = {}
+) {
+  if (!preserveCanvasSize) updateUnifiedBgCanvasSize(firstImage, state);
+  if (state.backgroundType === "wallpaper" && !state.backgroundImage) {
+    const wallpaper = [...SYSTEM_WALLPAPERS, ...customBgWallpapers].find(item => item.id === state.backgroundImageName) || SYSTEM_WALLPAPERS[0];
+    state.backgroundImage = await loadImageSource(wallpaper.url);
+    state.backgroundImageName = wallpaper.id;
+    state.backgroundImageUrl = wallpaper.url;
   }
-  if (blueBgState.backgroundType === "image" && !blueBgState.backgroundImage && blueBgState.backgroundImageUrl) {
-    blueBgState.backgroundImage = await loadImageSource(blueBgState.backgroundImageUrl);
+  if (state.backgroundType === "image" && !state.backgroundImage && state.backgroundImageUrl) {
+    state.backgroundImage = await loadImageSource(state.backgroundImageUrl);
   }
-  if (blueBgState.backgroundType === "lizhi") {
-    if (!blueBgState.headerImage) blueBgState.headerImage = await loadImageSource("./assets/IMG_header.png");
-    if (!blueBgState.footerImage) blueBgState.footerImage = await loadImageSource("./assets/IMG_footer.png");
+  if (state.backgroundType === "lizhi") {
+    if (!state.headerImage) state.headerImage = await loadImageSource("./assets/IMG_header.png");
+    if (!state.footerImage) state.footerImage = await loadImageSource("./assets/IMG_footer.png");
   }
-  blueBgState.background = blueBgState.backgroundImage;
-  blueBgCanvas().width = blueBgState.canvasWidth;
-  blueBgCanvas().height = blueBgState.canvasHeight;
+  state.background = state.backgroundImage;
+  if (state !== blueBgState) return;
+  blueBgCanvas().width = state.canvasWidth;
+  blueBgCanvas().height = state.canvasHeight;
 }
 
 async function loadBlueBgFile(file) {
@@ -1662,11 +1856,19 @@ async function loadBlueBgFile(file) {
   }
 }
 
-function continuousRoundedRect(ctx, x, y, width, height, radius) {
-  const r = Math.max(0, Math.min(radius * CONTINUOUS_CORNER_EXTENT, width / 2, height / 2));
+// corners 传 { tl, tr, br, bl } 时可按角关圆角：值为 false 的角走直角，
+// 不传则四角都圆（原行为）。
+function continuousRoundedRect(ctx, x, y, width, height, radius, corners = null) {
+  const limit = Math.min(width / 2, height / 2);
+  const full = Math.max(0, Math.min(radius * CONTINUOUS_CORNER_EXTENT, limit));
+  const radiusFor = key => (corners && corners[key] === false ? 0 : full);
+  const topLeft = radiusFor("tl");
+  const topRight = radiusFor("tr");
+  const bottomRight = radiusFor("br");
+  const bottomLeft = radiusFor("bl");
   const power = 2 / CONTINUOUS_CORNER_EXPONENT;
   const steps = 24;
-  const addCorner = (centerX, centerY, xSign, ySign, start, end) => {
+  const addCorner = (centerX, centerY, xSign, ySign, start, end, r) => {
     for (let index = 0; index <= steps; index++) {
       const angle = start + (end - start) * index / steps;
       const offsetX = r * Math.pow(Math.abs(Math.cos(angle)), power);
@@ -1675,16 +1877,42 @@ function continuousRoundedRect(ctx, x, y, width, height, radius) {
     }
   };
   ctx.beginPath();
-  ctx.moveTo(x + r, y);
-  ctx.lineTo(x + width - r, y);
-  addCorner(x + width - r, y + r, 1, -1, Math.PI / 2, 0);
-  ctx.lineTo(x + width, y + height - r);
-  addCorner(x + width - r, y + height - r, 1, 1, 0, Math.PI / 2);
-  ctx.lineTo(x + r, y + height);
-  addCorner(x + r, y + height - r, -1, 1, Math.PI / 2, 0);
-  ctx.lineTo(x, y + r);
-  addCorner(x + r, y + r, -1, -1, 0, Math.PI / 2);
+  ctx.moveTo(x + topLeft, y);
+  ctx.lineTo(x + width - topRight, y);
+  addCorner(x + width - topRight, y + topRight, 1, -1, Math.PI / 2, 0, topRight);
+  ctx.lineTo(x + width, y + height - bottomRight);
+  addCorner(x + width - bottomRight, y + height - bottomRight, 1, 1, 0, Math.PI / 2, bottomRight);
+  ctx.lineTo(x + bottomLeft, y + height);
+  addCorner(x + bottomLeft, y + height - bottomLeft, -1, 1, Math.PI / 2, 0, bottomLeft);
+  ctx.lineTo(x, y + topLeft);
+  addCorner(x + topLeft, y + topLeft, -1, -1, 0, Math.PI / 2, topLeft);
   ctx.closePath();
+}
+
+// 四角圆角开关按「左上 右上 右下 左下」顺序存成 4 位字符串（1 圆角 / 0 直角），
+// 缺省视为四角全圆，老数据不用迁移。
+const BG_CORNER_KEYS = ["tl", "tr", "br", "bl"];
+const BG_CORNER_LABELS = { tl: "左上", tr: "右上", br: "右下", bl: "左下" };
+
+function bgCornerFlags(value) {
+  const text = typeof value === "string" && value.length === BG_CORNER_KEYS.length ? value : "1111";
+  return {
+    tl: text[0] !== "0",
+    tr: text[1] !== "0",
+    br: text[2] !== "0",
+    bl: text[3] !== "0",
+  };
+}
+
+function bgCornersFromFlags(flags) {
+  return BG_CORNER_KEYS.map(key => (flags[key] ? "1" : "0")).join("");
+}
+
+function bgCornerLabel(value) {
+  const flags = bgCornerFlags(value);
+  const squared = BG_CORNER_KEYS.filter(key => !flags[key]);
+  if (!squared.length) return "四角均为圆角";
+  return `${squared.map(key => BG_CORNER_LABELS[key]).join("、")}为直角`;
 }
 
 function detectImageCornerRadius(image) {
@@ -1731,6 +1959,7 @@ function drawBlueBgLayer(ctx, layer) {
   const radius = shouldClipRound
     ? Math.min(Math.max(0, requestedRadius), layer.width / 2, layer.height / 2)
     : 0;
+  const corners = bgCornerFlags(layer.corners);
   if (layer.shadow) {
     const sigma = blueBgShadowSigma(layer);
     const renderScale = canvasContextScale(ctx);
@@ -1751,7 +1980,7 @@ function drawBlueBgLayer(ctx, layer) {
   }
   if (shouldClipRound) {
     ctx.save();
-    continuousRoundedRect(ctx, layer.x, layer.y, layer.width, layer.height, radius);
+    continuousRoundedRect(ctx, layer.x, layer.y, layer.width, layer.height, radius, corners);
     ctx.clip();
     ctx.drawImage(layer.image, layer.x, layer.y, layer.width, layer.height);
     ctx.restore();
@@ -1773,7 +2002,9 @@ function blueBgLayerSurface(layer, shouldClipRound, radius, padding, renderScale
   const width = Math.max(1, Math.ceil(layer.width * renderScale));
   const height = Math.max(1, Math.ceil(layer.height * renderScale));
   const inset = Math.ceil(padding * renderScale);
-  const cacheKey = `${width}:${height}:${shouldClipRound ? Math.round(radius * renderScale * 100) : 0}:${inset}`;
+  // 四角开关要进缓存键，否则改角以后会拿到旧形状的阴影底图。
+  const cornerKey = shouldClipRound ? bgCornersFromFlags(bgCornerFlags(layer.corners)) : "off";
+  const cacheKey = `${width}:${height}:${shouldClipRound ? Math.round(radius * renderScale * 100) : 0}:${inset}:${cornerKey}`;
   const cached = blueBgLayerSurfaceCache.get(layer);
   if (cached?.key === cacheKey && cached.image === layer.image) return cached.surface;
   const canvas = document.createElement("canvas");
@@ -1781,7 +2012,7 @@ function blueBgLayerSurface(layer, shouldClipRound, radius, padding, renderScale
   canvas.height = height + inset * 2;
   const surfaceCtx = canvas.getContext("2d");
   if (shouldClipRound) {
-    continuousRoundedRect(surfaceCtx, inset, inset, width, height, radius * renderScale);
+    continuousRoundedRect(surfaceCtx, inset, inset, width, height, radius * renderScale, bgCornerFlags(layer.corners));
     surfaceCtx.clip();
   }
   surfaceCtx.drawImage(layer.image, inset, inset, width, height);
@@ -1875,6 +2106,21 @@ function withAnnotationState(state, action) {
   }
 }
 
+// 标注层必须跟背景画布共用完全相同的显示尺寸与尺寸约束，缺一不可：
+// resetBlueBgZoom 会把两层的内联样式一起清空，之后若只补宽高，标注层就
+// 重新落回 CSS 的 max-height: calc(100vh - 290px)。此时高度被压缩、宽度
+// 不受限（grid 列的百分比 max-width 没有参照而失效），画布上的圆点序号
+// 会被拉成横椭圆。切换画布标签后直接缩放正是这条路径。
+function syncBgAnnotationBox(canvas = blueBgCanvas()) {
+  const overlay = $("#bgAnnotationCanvas");
+  if (!overlay || !canvas) return null;
+  overlay.style.width = canvas.style.width;
+  overlay.style.height = canvas.style.height;
+  overlay.style.maxWidth = canvas.style.maxWidth;
+  overlay.style.maxHeight = canvas.style.maxHeight;
+  return overlay;
+}
+
 function syncBgAnnotationSource(sourceCanvas = blueBgCanvas()) {
   if (!sourceCanvas?.width || !sourceCanvas?.height) return;
   let snapshot = bgAnnotationState.image;
@@ -1890,10 +2136,7 @@ function syncBgAnnotationSource(sourceCanvas = blueBgCanvas()) {
   // 仅在尺寸真的变化时才重设尺寸，避免无谓清空标注层。
   if (overlay.width !== sourceCanvas.width) overlay.width = sourceCanvas.width;
   if (overlay.height !== sourceCanvas.height) overlay.height = sourceCanvas.height;
-  overlay.style.width = sourceCanvas.style.width;
-  overlay.style.height = sourceCanvas.style.height;
-  overlay.style.maxWidth = sourceCanvas.style.maxWidth;
-  overlay.style.maxHeight = sourceCanvas.style.maxHeight;
+  syncBgAnnotationBox(sourceCanvas);
 }
 
 function clearBgAnnotationSelection() {
@@ -2105,7 +2348,7 @@ function renderBgWallpaperChoices() {
   const wrap = $("#bgWallpaperChoices");
   if (!wrap) return;
   wrap.innerHTML = "";
-  [...MACOS_WALLPAPERS, ...customBgWallpapers].forEach(wallpaper => {
+  [...SYSTEM_WALLPAPERS, ...customBgWallpapers].forEach(wallpaper => {
     const button = document.createElement("button");
     button.type = "button";
     button.className = "bg-background-tile";
@@ -2114,7 +2357,10 @@ function renderBgWallpaperChoices() {
     const label = wallpaper.label.replace("macOS ", "");
     const compactClass = label.length >= 10 ? " bg-background-tile-label-compact" : "";
     button.innerHTML = `<span class="bg-background-tile-preview"><img src="${wallpaper.url}" alt=""></span><strong class="${compactClass.trim()}">${label}</strong>`;
-    button.dataset.bgCustom = wallpaper.custom ? "true" : "";
+    // 只有自定义壁纸才带 data-bg-custom 标记：点击处理器用属性存在与否
+    // 判断「要不要打开文件选择框」，写成空字符串会让系统壁纸也命中，
+    // 点壁纸磁贴就变成弹文件框、背景反而没切。
+    if (wallpaper.custom) button.dataset.bgCustom = "true";
     button.title = `${wallpaper.label} · 来源：${wallpaper.source}`;
     wrap.appendChild(button);
   });
@@ -2240,7 +2486,7 @@ function openBgBackgroundDialog() {
   $("#bgCanvasAspect").value = blueBgState.aspectMode || "default";
   renderBgWallpaperChoices();
   renderBgCustomChoices();
-  const wallpaper = [...MACOS_WALLPAPERS, ...customBgWallpapers].find(item => item.id === blueBgState.backgroundImageName) || MACOS_WALLPAPERS[0];
+  const wallpaper = [...SYSTEM_WALLPAPERS, ...customBgWallpapers].find(item => item.id === blueBgState.backgroundImageName) || SYSTEM_WALLPAPERS[0];
   $("#bgWallpaperSelect").value = wallpaper.id;
   const feedback = $("#bgBackgroundFeedback");
   feedback.textContent = "";
@@ -2314,7 +2560,7 @@ async function applyBgBackgroundSettings() {
   if (type === "solid") localStorage.setItem(BG_CUSTOM_COLOR_KEY, blueBgState.backgroundColor);
   blueBgState.backgroundGradient = $("#bgBackgroundGradient").value || BG_GRADIENT_PRESETS[0].id;
   if (type === "wallpaper") {
-    const wallpaper = [...MACOS_WALLPAPERS, ...customBgWallpapers].find(item => item.id === $("#bgWallpaperSelect").value) || MACOS_WALLPAPERS[0];
+    const wallpaper = [...SYSTEM_WALLPAPERS, ...customBgWallpapers].find(item => item.id === $("#bgWallpaperSelect").value) || SYSTEM_WALLPAPERS[0];
     blueBgState.backgroundImage = await loadImageSource(wallpaper.url);
     blueBgState.backgroundImageName = wallpaper.id;
     blueBgState.backgroundImageUrl = wallpaper.url;
@@ -2366,7 +2612,7 @@ async function applyBgBackgroundSettings() {
 }
 
 function backgroundTypeLabel(type) {
-  return { lizhi: "荔枝默认", blue: "蓝色", solid: "自定义颜色", transparent: "无背景", gradient: "渐变色", image: "自定义图片", wallpaper: "macOS 壁纸" }[type] || type;
+  return { lizhi: "荔枝默认", blue: "蓝色", solid: "自定义颜色", transparent: "无背景", gradient: "渐变色", image: "自定义图片", wallpaper: "系统壁纸" }[type] || type;
 }
 
 function updateBgControlsAfterBackgroundChange() {
@@ -2417,6 +2663,12 @@ function syncBgEffectToolbar() {
     const radius = Math.max(0, Math.round(Number.isFinite(storedRadius) ? storedRadius : SYSTEM_CORNER_RADIUS));
     $("#bgEffectRoundRadius").value = String(Math.min(128, radius));
     $("#bgEffectRoundRadiusValue").textContent = `${radius} px`;
+    const cornerFlags = bgCornerFlags(selected.corners);
+    $$("#bgEffectCorners button").forEach(button => {
+      button.disabled = disabled || !selected.round;
+      button.classList.toggle("active", Boolean(cornerFlags[button.dataset.bgCorner]));
+    });
+    $("#bgEffectCornersValue").textContent = bgCornerLabel(bgCornersFromFlags(cornerFlags));
     const scale = blueprint
       ? Math.round(selected.width / selected.fitWidth * 100)
       : selected.scale;
@@ -2429,6 +2681,11 @@ function syncBgEffectToolbar() {
     $("#bgEffectRound").indeterminate = false;
     $("#bgEffectRoundRadius").value = String(SYSTEM_CORNER_RADIUS);
     $("#bgEffectRoundRadiusValue").textContent = `${SYSTEM_CORNER_RADIUS} px`;
+    $$("#bgEffectCorners button").forEach(button => {
+      button.disabled = true;
+      button.classList.remove("active");
+    });
+    $("#bgEffectCornersValue").textContent = bgCornerLabel("1111");
     $("#bgEffectScaleValue").textContent = "—";
   }
 }
@@ -2555,8 +2812,7 @@ function expandTransparentBlueBgCanvas() {
   const annotationCanvas = $("#bgAnnotationCanvas");
   annotationCanvas.width = blueBgState.canvasWidth;
   annotationCanvas.height = blueBgState.canvasHeight;
-  annotationCanvas.style.width = canvas.style.width;
-  annotationCanvas.style.height = canvas.style.height;
+  syncBgAnnotationBox(canvas);
   if (stage) {
     stage.scrollLeft = previousScrollLeft + leftGrowth * displayScaleX;
     stage.scrollTop = previousScrollTop + topGrowth * displayScaleY;
@@ -2618,6 +2874,7 @@ async function addBlueBgFiles(fileList, reset = false) {
       // 反复变化。已有透明圆角由绘制阶段直接保留原始 alpha。
       cornerRadius: SYSTEM_CORNER_RADIUS,
       cornerAuto: true,
+      corners: "1111",
       hasTransparentCorners: detectedCornerRadius > 0,
     };
     clampBlueBgLayer(layer);
@@ -2765,12 +3022,23 @@ function blueBgPointerDown(event) {
     .map(candidate => ({ layer: candidate, handle: blueBgHitHandle(candidate, point) }))
     .find(candidate => candidate.handle);
   if (handleTarget) {
+    const selectedAnnotations = withAnnotationState(bgAnnotationState, () => selectedAnnotationItems());
+    const resizeCombined = selectedLayers.length + selectedAnnotations.length > 1;
     blueBgState.interaction = {
-      mode: "resize",
+      mode: resizeCombined ? "resize-combined" : "resize",
       id: handleTarget.layer.id,
       handle: handleTarget.handle,
       start: point,
       original: { ...handleTarget.layer },
+      originals: resizeCombined
+        ? selectedLayers.map(candidate => ({ ...candidate }))
+        : null,
+      annotationOriginals: resizeCombined
+        ? selectedAnnotations.map(item => ({
+            ...item,
+            ...(item.type === "pen" ? { points: (item.points || []).map(penPoint => ({ ...penPoint })) } : {}),
+          }))
+        : null,
     };
   } else {
     const movingSelection = layer && selectedLayers.some(candidate => candidate.id === layer.id);
@@ -2796,6 +3064,71 @@ function blueBgPointerDown(event) {
   renderBlueBgCanvas();
   if (!layer && hadSelection) blueBgStatus("已取消框选。");
   event.preventDefault();
+}
+
+function scaleAnnotationItemFromAnchor(item, original, anchor, scale) {
+  const scalePoint = (x, y) => ({
+    x: anchor.x + (x - anchor.x) * scale,
+    y: anchor.y + (y - anchor.y) * scale,
+  });
+  if (original.type === "number") {
+    const point = scalePoint(original.x, original.y);
+    item.x = point.x;
+    item.y = point.y;
+    item.size = Math.max(1, annotationNumberSize(original) * scale);
+    return;
+  }
+  if (original.type === "magnifier") {
+    const source = scalePoint(original.sourceX, original.sourceY);
+    const lens = scalePoint(original.lensX, original.lensY);
+    item.sourceX = source.x;
+    item.sourceY = source.y;
+    item.lensX = lens.x;
+    item.lensY = lens.y;
+    item.sourceRadius = Math.max(1, original.sourceRadius * scale);
+    item.lensRadius = Math.max(1, original.lensRadius * scale);
+    item.lineWidth = Math.max(1, original.lineWidth * scale);
+    return;
+  }
+  if (original.type === "pen") {
+    item.points = (original.points || []).map(point => scalePoint(point.x, point.y));
+    item.lineWidth = Math.max(1, original.lineWidth * scale);
+    return;
+  }
+  const topLeft = scalePoint(original.x, original.y);
+  item.x = topLeft.x;
+  item.y = topLeft.y;
+  item.width = Math.max(1, original.width * scale);
+  item.height = Math.max(1, original.height * scale);
+  if (original.type === "mask") {
+    item.cornerRadius = Math.max(0, (Number(original.cornerRadius) || 0) * scale);
+  }
+}
+
+function scaleCombinedBgSelection(interaction, resizedLayer, centered) {
+  const original = interaction.original;
+  const scale = Math.max(0.01, resizedLayer.width / Math.max(1, original.width));
+  const anchor = centered
+    ? { x: original.x + original.width / 2, y: original.y + original.height / 2 }
+    : {
+        x: interaction.handle.includes("w") ? original.x + original.width : original.x,
+        y: interaction.handle.includes("n") ? original.y + original.height : original.y,
+      };
+  interaction.originals.forEach(layerOriginal => {
+    const candidate = blueBgState.layers.find(item => item.id === layerOriginal.id);
+    if (!candidate) return;
+    candidate.x = anchor.x + (layerOriginal.x - anchor.x) * scale;
+    candidate.y = anchor.y + (layerOriginal.y - anchor.y) * scale;
+    candidate.width = Math.max(1, layerOriginal.width * scale);
+    candidate.height = Math.max(1, layerOriginal.height * scale);
+  });
+  withAnnotationState(bgAnnotationState, () => {
+    interaction.annotationOriginals.forEach(annotationOriginal => {
+      const candidate = bgAnnotationState.items.find(item => item.id === annotationOriginal.id);
+      if (!candidate) return;
+      scaleAnnotationItemFromAnchor(candidate, annotationOriginal, anchor, scale);
+    });
+  });
 }
 
 function blueBgPointerMove(event) {
@@ -2878,7 +3211,11 @@ function blueBgPointerMove(event) {
     const toleranceX = 12 * canvas.width / Math.max(1, rect.width);
     const toleranceY = 12 * canvas.height / Math.max(1, rect.height);
     const frameMargin = canvasDisplayUnit(canvas);
-    const targets = blueBgAlignmentTargets([layer.id]);
+    const targets = blueBgAlignmentTargets(
+      interaction.mode === "resize-combined"
+        ? interaction.originals.map(candidate => candidate.id)
+        : [layer.id]
+    );
     const visualEdgePoint = {
       x: interaction.handle.includes("w")
         ? point.x + frameMargin
@@ -2914,10 +3251,10 @@ function blueBgPointerMove(event) {
     const resized = resizeBoundsWithModifiers(interaction.original, interaction.handle, resizePoint, {
       minWidth: 20,
       minHeight: 20,
-      preserveAspect: !event.shiftKey,
+      preserveAspect: interaction.mode === "resize-combined" || !event.shiftKey,
       centered,
     });
-    if (!event.shiftKey || centered) {
+    if (interaction.mode === "resize-combined" || !event.shiftKey || centered) {
       const minScale = 0.1;
       const maxScale = 5;
       const scale = Math.max(
@@ -2948,8 +3285,11 @@ function blueBgPointerMove(event) {
     } else {
       Object.assign(layer, resized);
     }
+    if (interaction.mode === "resize-combined") {
+      scaleCombinedBgSelection(interaction, layer, centered);
+    }
   }
-  clampBlueBgLayer(layer);
+  if (interaction.mode !== "resize-combined") clampBlueBgLayer(layer);
   expandTransparentBlueBgCanvas();
   updateBlueBgControls();
   renderBlueBgCanvas();
@@ -3202,7 +3542,7 @@ async function removeCustomBgChoice() {
     customBgWallpapers = customBgWallpapers.filter(item => item.id !== id);
     if ($("#bgWallpaperSelect").value === id) {
       $("#bgBackgroundType").value = "wallpaper";
-      $("#bgWallpaperSelect").value = MACOS_WALLPAPERS[0].id;
+      $("#bgWallpaperSelect").value = SYSTEM_WALLPAPERS[0].id;
     }
   }
   hideBgChoiceContextMenu();
@@ -3421,6 +3761,41 @@ function updateBlueBgLayerRadius() {
   updateBlueBgControls();
   renderBlueBgCanvas();
   blueBgStatus(`所选图片圆角 ${radius}px · 可继续拖动滑杆调整`);
+}
+
+// 切换某个角的圆角：点亮 / 熄灭都作用于当前选中的全部图层或素材。
+function toggleBgCorner(key) {
+  if (!BG_CORNER_KEYS.includes(key)) return;
+  if ($("#bgBlueMode").checked) {
+    const layers = selectedBlueBgLayers();
+    if (!layers.length) return;
+    const flags = bgCornerFlags(layers[0].corners);
+    flags[key] = !flags[key];
+    const corners = bgCornersFromFlags(flags);
+    layers.forEach(layer => {
+      layer.corners = corners;
+      // 改成手动控制某一角后，不再沿用图片自带的透明圆角。
+      layer.cornerAuto = false;
+    });
+    updateBlueBgControls();
+    renderBlueBgCanvas();
+    blueBgStatus(`圆角位置：${bgCornerLabel(corners)} · 可继续点选调整`);
+    return;
+  }
+  const indexes = selectedDefaultBgMaterialIndexes();
+  if (!indexes.length) return;
+  const flags = bgCornerFlags(bgMaterials[indexes[0]].corners);
+  flags[key] = !flags[key];
+  const corners = bgCornersFromFlags(flags);
+  indexes.forEach(index => {
+    const material = bgMaterials[index];
+    material.corners = corners;
+    material.cornerAuto = false;
+    material.outputBlob = null;
+    scheduleDefaultBgMaterialRender(index);
+  });
+  syncBgEffectToolbar();
+  syncBgGeneratedResults();
 }
 
 function updateBlueBgLayerScale() {
@@ -3754,6 +4129,7 @@ function setBgFiles(fileList) {
     unused: false,
     cornerRadius: SYSTEM_CORNER_RADIUS,
     cornerAuto: true,
+    corners: "1111",
     outputBlob: null,
     outputUrl: "",
     outputLabel: "",
@@ -3806,6 +4182,7 @@ async function importBgFiles(fileList) {
       unused: !accepted.includes(file),
       cornerRadius: SYSTEM_CORNER_RADIUS,
       cornerAuto: true,
+      corners: "1111",
       outputBlob: null,
       outputUrl: "",
       outputLabel: "",
@@ -3868,7 +4245,13 @@ async function importClipboardImageIntoActiveModule(event) {
       return true;
     }
     if (moduleId === "imageEditor") {
-      await loadImageEditorFile(files[0]);
+      // 换屏模式下粘贴的是「要贴上去的截图」，直接贴到已定的选区内；
+      // 不能走 loadImageEditorFile，那会把底图和四角一起清掉。
+      if (imageEditorState.mode === "screen" && imageEditorState.hasImage) {
+        await imageEditorScreenLoadFile(files[0]);
+      } else {
+        await loadImageEditorFile(files[0]);
+      }
       return true;
     }
   } catch (error) {
@@ -4099,6 +4482,7 @@ function pushBgHistory() {
       round: material.round,
       cornerRadius: material.cornerRadius,
       cornerAuto: material.cornerAuto,
+      corners: bgCornersFromFlags(bgCornerFlags(material.corners)),
       unused: material.unused,
     })),
     layers: snapshot.layers.map(layer => ({
@@ -4106,6 +4490,7 @@ function pushBgHistory() {
       shadow: layer.shadow, round: layer.round,
       cornerRadius: layer.cornerRadius,
       cornerAuto: layer.cornerAuto,
+      corners: bgCornersFromFlags(bgCornerFlags(layer.corners)),
       unused: layer.unused,
     })),
     selectedId: snapshot.selectedId,
@@ -4153,7 +4538,7 @@ function restoreBgHistory(index) {
   ) + 1;
   bgAnnotationState.numberSize = annotations.numberSize || ANNOTATION_NUMBER_SIZE;
   bgAnnotationState.numberColor = annotations.numberColor || "#ff5a52";
-  bgAnnotationState.blurStrength = annotations.blurStrength || 16;
+  bgAnnotationState.blurStrength = annotations.blurStrength || 6;
   bgAnnotationState.maskColor = annotations.maskColor || "#98b2c0";
   bgAnnotationState.maskRound = Boolean(annotations.maskRound);
   bgAnnotationState.maskRoundRadius = annotations.maskRoundRadius || 16;
@@ -4183,7 +4568,8 @@ function restoreBgHistory(index) {
     ensureUnifiedBgBackground(blueBgState.layers[0]?.image || null).then(() => {
       updateBlueBgControls();
       renderBlueBgCanvas();
-      resetBlueBgZoom();
+      // 撤销只回放编辑内容：缩放与画面位置属于视图操作，保持用户当前的视野。
+      resetBlueBgZoom(blueBgState.zoom, { preserveView: true });
     }).catch(err => blueBgStatus(err.message));
   } else {
     if (bgSelectedMaterialIndex >= 0) openBgMaterialInspector(bgSelectedMaterialIndex);
@@ -4399,12 +4785,19 @@ function updateImageEditorControls() {
     "#imageEditorSplitMode",
     "#imageEditorBlendMode",
     "#imageEditorWindowMode",
+    "#imageEditorScreenMode",
     "#imageEditorExport",
   ].forEach(selector => {
     $(selector).disabled = !hasImage;
   });
-  $("#imageEditorUndo").disabled = !hasImage || imageEditorState.historyIndex <= 0;
-  $("#imageEditorRedo").disabled = !hasImage || imageEditorState.historyIndex >= imageEditorState.history.length - 1;
+  const screenHistoryActive = imageEditorState.mode === "screen";
+  const screenState = imageEditorScreen();
+  $("#imageEditorUndo").disabled = !hasImage || (screenHistoryActive
+    ? screenState.editHistoryIndex <= 0
+    : imageEditorState.historyIndex <= 0);
+  $("#imageEditorRedo").disabled = !hasImage || (screenHistoryActive
+    ? screenState.editHistoryIndex >= screenState.editHistory.length - 1
+    : imageEditorState.historyIndex >= imageEditorState.history.length - 1);
   $("#imageEditorMoveMode").classList.toggle("active", imageEditorState.mode === "view");
   $("#imageEditorRemoveMode").classList.toggle("active", imageEditorState.mode === "remove");
   $("#imageEditorInpaintMode").classList.toggle("active", imageEditorState.mode === "inpaint");
@@ -4414,15 +4807,22 @@ function updateImageEditorControls() {
   $("#imageEditorSplitMode").classList.toggle("active", imageEditorState.mode === "split");
   $("#imageEditorBlendMode").classList.toggle("active", imageEditorState.mode === "blend");
   $("#imageEditorMoreButton").classList.toggle("active", ["split", "blend"].includes(imageEditorState.mode));
+  $("#imageEditorScreenMode").classList.toggle("active", imageEditorState.mode === "screen");
   const compositeActive = ["split", "blend"].includes(imageEditorState.mode);
   const inpaintActive = imageEditorState.mode === "inpaint";
   const coverActive = imageEditorState.mode === "cover";
+  const screenActive = imageEditorState.mode === "screen";
   const inspector = $("#imageEditorInspector");
   $("#imageEditorCompositeControls").hidden = !compositeActive;
   $("#imageEditorInpaintControls").hidden = !inpaintActive;
   $("#imageEditorCoverControls").hidden = !coverActive;
-  $("#imageEditorInspectorHint").hidden = compositeActive || inpaintActive || coverActive;
-  inspector.classList.toggle("is-disabled", !compositeActive && !inpaintActive && !coverActive);
+  $("#imageEditorScreenControls").hidden = !screenActive;
+  $("#imageEditorInspectorHint").hidden = compositeActive || inpaintActive || coverActive || screenActive;
+  inspector.classList.toggle("is-disabled", !compositeActive && !inpaintActive && !coverActive && !screenActive);
+  $("#imageEditorScreenFileButton").disabled = !hasImage;
+  $("#imageEditorScreenReset").disabled = !hasImage || !screenState.corners.length;
+  $("#imageEditorScreenRefine").disabled = !hasImage || screenState.corners.length !== 4;
+  if (screenActive) imageEditorScreenSyncParamLabels();
   $$("#imageEditorCoverControls [data-cover-shape]").forEach(button => {
     button.classList.toggle("active", button.dataset.coverShape === imageEditorState.coverShape);
   });
@@ -4433,6 +4833,7 @@ function updateImageEditorControls() {
   stage.dataset.mode = imageEditorState.mode;
   stage.classList.toggle("has-selection", hasSelection || Boolean(imageEditorState.gradient));
   syncImageEditorOverlays();
+  scheduleImageEditorInspectorAlign();
 }
 
 function intersectImageEditorSelection(selection = imageEditorState.selection) {
@@ -4574,10 +4975,16 @@ function renderImageEditorCanvas() {
   if (!imageEditorState.hasImage) return;
   const canvas = imageEditorCanvas();
   const source = imageEditorState.documentCanvas;
-  canvas.width = source.width;
-  canvas.height = source.height;
+  // 只在尺寸真的变化时才重设：赋值 width/height 会让浏览器丢弃整个画布位图，
+  // 拖动角点时每帧重设会造成明显的闪烁与掉帧。
+  if (canvas.width !== source.width) canvas.width = source.width;
+  if (canvas.height !== source.height) canvas.height = source.height;
   const ctx = canvas.getContext("2d");
-  if (["split", "blend"].includes(imageEditorState.mode) && imageEditorState.secondImage) {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  const screenState = imageEditorState.screen;
+  if (imageEditorState.mode === "screen" && screenState && screenState.preview) {
+    ctx.drawImage(screenState.preview, 0, 0, canvas.width, canvas.height);
+  } else if (["split", "blend"].includes(imageEditorState.mode) && imageEditorState.secondImage) {
     drawImageEditorComposite(ctx, canvas.width, canvas.height, true);
   } else {
     ctx.drawImage(source, 0, 0);
@@ -4726,6 +5133,7 @@ function syncImageEditorOverlays() {
     gradientOverlay.style.setProperty("--gradient-actions-y", `${actionY}px`);
   }
   renderImageEditorSnapGuides();
+  imageEditorScreenSyncOverlay();
 }
 
 // —— 局部修复（圆形笔刷 + 周边像素填充）——
@@ -4955,8 +5363,78 @@ function inpaintImageEditorRegion(circles) {
   return true;
 }
 
+// 智能覆盖用到的取色环：选区往外这么宽的一圈像素用来统计底色。
+const COVER_RING_WIDTH = 10;
+// 颜色量化位数：每通道右移 3 位（8 级一档），抵消截图压缩带来的细微噪点，
+// 统计完再用同档像素的均值还原，纯色背景能取回原色。
+const COVER_COLOR_SHIFT = 3;
+
+function traceImageEditorCoverShape(ctx, x, y, w, h, shape = imageEditorState.coverShape) {
+  ctx.beginPath();
+  if (shape === "ellipse") {
+    ctx.ellipse(x + w / 2, y + h / 2, w / 2, h / 2, 0, 0, Math.PI * 2);
+  } else {
+    ctx.rect(x, y, w, h);
+  }
+}
+
+// 选出「选区往外 COVER_RING_WIDTH 一圈」的像素：按形状描一圈粗边（线宽＝两倍环宽，
+// 一半压在选区里），再把选区本身挖掉，剩下的就是外侧那圈。
+function coverRingMask(x, y, w, h, left, top, ringWidth, ringHeight, shape) {
+  const maskCanvas = document.createElement("canvas");
+  maskCanvas.width = ringWidth;
+  maskCanvas.height = ringHeight;
+  const ctx = maskCanvas.getContext("2d");
+  ctx.translate(-left, -top);
+  ctx.lineWidth = COVER_RING_WIDTH * 2;
+  ctx.strokeStyle = "#fff";
+  traceImageEditorCoverShape(ctx, x, y, w, h, shape);
+  ctx.stroke();
+  ctx.globalCompositeOperation = "destination-out";
+  traceImageEditorCoverShape(ctx, x, y, w, h, shape);
+  ctx.fill();
+  return ctx.getImageData(0, 0, ringWidth, ringHeight).data;
+}
+
+// 统计取色环里占比最高的颜色，返回该档像素的平均色。
+function dominantCoverRingColor(canvas, x, y, w, h, shape) {
+  const ring = COVER_RING_WIDTH;
+  const left = Math.max(0, x - ring);
+  const top = Math.max(0, y - ring);
+  const right = Math.min(canvas.width, x + w + ring);
+  const bottom = Math.min(canvas.height, y + h + ring);
+  const ringWidth = right - left;
+  const ringHeight = bottom - top;
+  if (ringWidth < 1 || ringHeight < 1) return null;
+  const source = canvas.getContext("2d").getImageData(left, top, ringWidth, ringHeight).data;
+  const mask = coverRingMask(x, y, w, h, left, top, ringWidth, ringHeight, shape);
+  const buckets = new Map();
+  let best = null;
+  for (let index = 0; index < ringWidth * ringHeight; index++) {
+    if (mask[index * 4 + 3] < 128) continue;
+    const at = index * 4;
+    if (source[at + 3] < 128) continue;
+    const key =
+      ((source[at] >> COVER_COLOR_SHIFT) << 10) |
+      ((source[at + 1] >> COVER_COLOR_SHIFT) << 5) |
+      (source[at + 2] >> COVER_COLOR_SHIFT);
+    let bucket = buckets.get(key);
+    if (!bucket) {
+      bucket = { count: 0, r: 0, g: 0, b: 0 };
+      buckets.set(key, bucket);
+    }
+    bucket.count += 1;
+    bucket.r += source[at];
+    bucket.g += source[at + 1];
+    bucket.b += source[at + 2];
+    if (!best || bucket.count > best.count) best = bucket;
+  }
+  if (!best) return null;
+  return [best.r, best.g, best.b].map(total => Math.round(total / best.count));
+}
+
 function applyCoverFill(bounds) {
-  // 智能覆盖：对矩形/椭圆形选区执行扩散填充，颜色自动匹配周边画面。
+  // 智能覆盖：取选区外围一圈像素，找出占比最高的颜色，整个选区填成这个颜色。
   if (!bounds) return false;
   const canvas = imageEditorState.documentCanvas;
   const x = Math.round(bounds.x);
@@ -4964,6 +5442,22 @@ function applyCoverFill(bounds) {
   const w = Math.round(bounds.width);
   const h = Math.round(bounds.height);
   if (w < 2 || h < 2) return false;
+  const color = dominantCoverRingColor(canvas, x, y, w, h, imageEditorState.coverShape);
+  const ctx = canvas.getContext("2d");
+  if (!color) {
+    // 四周没有可用的不透明像素（例如整片透明）时，退回原来的扩散填充。
+    return applyCoverDiffusionFill(x, y, w, h);
+  }
+  ctx.save();
+  ctx.fillStyle = `rgb(${color[0]}, ${color[1]}, ${color[2]})`;
+  traceImageEditorCoverShape(ctx, x, y, w, h);
+  ctx.fill();
+  ctx.restore();
+  return true;
+}
+
+function applyCoverDiffusionFill(x, y, w, h) {
+  const canvas = imageEditorState.documentCanvas;
   const ctx = canvas.getContext("2d");
   const imageData = ctx.getImageData(x, y, w, h);
   const mask = new Uint8Array(w * h);
@@ -5071,6 +5565,40 @@ function drawImageEditorComposite(ctx, width, height, withGuide) {
   if (withGuide && imageEditorState.mode === "split") drawImageEditorDivider(ctx, width, height);
 }
 
+// 「功能键扩展区」的底边收口：默认贴着自己的内容，顶边与「美化 / 标注」一样
+// 从标签栏顶端起。当它和画布底边的垂直位置相差不到画布高度的 15% 时，
+// 把面板撑到与画布底边齐平；差得太多（要补的空白太大）就保持自然高度。
+// 窄屏是上下堆叠布局，面板铺满整行，不做这个对齐。
+const IMAGE_EDITOR_INSPECTOR_ALIGN_RATIO = 0.15;
+const IMAGE_EDITOR_STACK_LAYOUT_MAX_WIDTH = 900;
+
+let imageEditorInspectorAlignFrame = 0;
+
+function scheduleImageEditorInspectorAlign() {
+  if (imageEditorInspectorAlignFrame) return;
+  imageEditorInspectorAlignFrame = requestAnimationFrame(() => {
+    imageEditorInspectorAlignFrame = 0;
+    syncImageEditorInspectorAlign();
+  });
+}
+
+function syncImageEditorInspectorAlign() {
+  const inspector = $("#imageEditorInspector");
+  if (!inspector) return;
+  // 先撤掉上一次的定高，量到的才是内容自然高度（顶边不受高度影响）。
+  inspector.style.height = "";
+  if (window.innerWidth <= IMAGE_EDITOR_STACK_LAYOUT_MAX_WIDTH) return;
+  const rect = inspector.getBoundingClientRect();
+  if (!rect.height) return;
+  const canvasRect = imageEditorCanvas().getBoundingClientRect();
+  if (!canvasRect.height) return;
+  const offset = Math.abs(rect.bottom - canvasRect.bottom);
+  if (offset > canvasRect.height * IMAGE_EDITOR_INSPECTOR_ALIGN_RATIO) return;
+  const height = canvasRect.bottom - rect.top;
+  if (height <= 0) return;
+  inspector.style.height = `${Math.round(height)}px`;
+}
+
 function applyImageEditorZoom(zoom) {
   if (!imageEditorState.hasImage || !imageEditorState.baseDisplayWidth) return;
   const canvas = imageEditorCanvas();
@@ -5084,15 +5612,24 @@ function applyImageEditorZoom(zoom) {
   $("#imageEditorCanvasZoomValue").textContent = `${zoomPercent}%`;
   requestAnimationFrame(() => {
     syncImageEditorOverlays();
+    imageEditorScreenRefreshMagnifier();
     refreshImageEditorInpaintCursor();
+    syncImageEditorInspectorAlign();
   });
 }
 
-function resetImageEditorZoom() {
+// 重新测量「100% 时的显示尺寸」，再恢复到 targetZoom。
+// 切换画布标签时会带上该标签自己的缩放比例，不重置成 100%。
+// preserveView：重新测量期间画布会先缩回原始尺寸，浏览器会把滚动位置夹小，
+// 撤销 / 重做回放历史时用它把用户的画面位置原样放回去。
+function resetImageEditorZoom(targetZoom = 1, { preserveView = false } = {}) {
   const canvas = imageEditorCanvas();
-  imageEditorState.zoom = 1;
-  $("#imageEditorCanvasZoom").value = "100";
-  $("#imageEditorCanvasZoomValue").textContent = "100%";
+  const stage = $("#imageEditorStage");
+  const tabId = activeImageEditorTabId;
+  const scrollLeft = preserveView ? stage?.scrollLeft || 0 : 0;
+  const scrollTop = preserveView ? stage?.scrollTop || 0 : 0;
+  const zoom = Math.max(0.5, Math.min(20, Number(targetZoom) || 1));
+  imageEditorState.zoom = zoom;
   imageEditorState.baseDisplayWidth = 0;
   imageEditorState.baseDisplayHeight = 0;
   canvas.style.width = "";
@@ -5100,13 +5637,22 @@ function resetImageEditorZoom() {
   canvas.style.maxWidth = "";
   canvas.style.maxHeight = "";
   requestAnimationFrame(() => {
-    if (!imageEditorState.hasImage) return;
+    if (activeImageEditorTabId !== tabId || !imageEditorState.hasImage) return;
     const rect = canvas.getBoundingClientRect();
-    imageEditorState.baseDisplayWidth = rect.width;
-    imageEditorState.baseDisplayHeight = rect.height;
+    // 用统一比例换算，避免宽高分别取整后把画布拉变形。
+    const scale = Math.min(
+      rect.width / Math.max(1, canvas.width),
+      rect.height / Math.max(1, canvas.height)
+    );
+    imageEditorState.baseDisplayWidth = canvas.width * scale;
+    imageEditorState.baseDisplayHeight = canvas.height * scale;
     canvas.style.maxWidth = "none";
     canvas.style.maxHeight = "none";
-    applyImageEditorZoom(1);
+    applyImageEditorZoom(zoom);
+    if (preserveView && stage) {
+      stage.scrollLeft = scrollLeft;
+      stage.scrollTop = scrollTop;
+    }
   });
 }
 
@@ -5131,16 +5677,1334 @@ async function loadImageEditorFile(file, sourceBg = null) {
     imageEditorState.historyIndex = -1;
     imageEditorState.sourceBgMaterialIndex = sourceBg?.materialIndex ?? null;
     imageEditorState.sourceBgLayerId = sourceBg?.layerId ?? null;
+    imageEditorState.screen = null;
     pushImageEditorHistory();
     $("#imageEditorStage").classList.add("has-image");
     renderImageEditorCanvas();
     resetImageEditorZoom();
     updateImageEditorControls();
+    syncActiveImageEditorTabTitle();
     imageEditorStatus(`${image.naturalWidth} × ${image.naturalHeight}px · 已导入原图`);
   } finally {
     URL.revokeObjectURL(url);
   }
 }
+
+// —— 换屏：把一张截图按透视贴到画面里的屏幕位置上 ——
+// 四角 → 单应矩阵 → 逐像素反向映射。反向映射没有网格分片法的接缝与空洞，
+// 边缘覆盖率、光照调制、刘海保留都在同一个循环里完成。
+
+const IMAGE_EDITOR_SCREEN_PREVIEW_MAX = 480;   // 拖动预览时底图的最长边（越小越跟手）
+
+function imageEditorScreen() {
+  if (!imageEditorState.screen) {
+    imageEditorState.screen = {
+      image: null,        // 适配后的截图 { canvas, data, width, height }
+      source: null,       // 截图原图
+      fitK: 0,
+      corners: [],        // 四角，顺序：左上 → 右上 → 右下 → 左下
+      activeCorner: -1,
+      interaction: null,
+      params: { light: 0.45, feather: 1.5, radius: 4, opacity: 1, fit: "stretch", notch: true },
+      autoSnap: true,
+      notch: null,
+      preview: null,      // 预览缓存画布
+      previewScale: 1,
+      fastCanvas: null,
+      fullCanvas: null,
+      rafPending: false,
+      fullTimer: 0,
+      baseData: null,
+      baseCanvas: null,          // 贴合前的底图，用于再次进入时继续调整
+      appliedHistoryIndex: null,
+      magnifierFocus: null,      // 放大镜当前对准的画布坐标
+      editHistory: [],           // 未确认的四角、贴图与参数也可撤销 / 重做
+      editHistoryIndex: -1,
+    };
+  }
+  return imageEditorState.screen;
+}
+
+function imageEditorScreenClamp(value, lo, hi) {
+  return value < lo ? lo : (value > hi ? hi : value);
+}
+
+function imageEditorScreenSnapshot() {
+  const screen = imageEditorScreen();
+  return {
+    corners: screen.corners.map(point => ({ x: point.x, y: point.y })),
+    params: { ...screen.params },
+    source: screen.source,
+    image: screen.image,
+    fitK: screen.fitK,
+    notch: screen.notch,
+  };
+}
+
+function imageEditorScreenHistorySignature(snapshot) {
+  return JSON.stringify({
+    corners: snapshot.corners.map(point => [Math.round(point.x * 100) / 100, Math.round(point.y * 100) / 100]),
+    params: snapshot.params,
+    source: snapshot.source ? [snapshot.source.width, snapshot.source.height] : null,
+    fitK: Math.round(snapshot.fitK * 1000) / 1000,
+  });
+}
+
+function pushImageEditorScreenHistory() {
+  const screen = imageEditorScreen();
+  const snapshot = imageEditorScreenSnapshot();
+  snapshot.signature = imageEditorScreenHistorySignature(snapshot);
+  if (screen.editHistory[screen.editHistoryIndex]?.signature === snapshot.signature) return;
+  screen.editHistory = screen.editHistory.slice(0, screen.editHistoryIndex + 1);
+  screen.editHistory.push(snapshot);
+  if (screen.editHistory.length > 30) screen.editHistory.shift();
+  screen.editHistoryIndex = screen.editHistory.length - 1;
+  updateImageEditorControls();
+}
+
+function restoreImageEditorScreenHistory(index) {
+  const screen = imageEditorScreen();
+  const snapshot = screen.editHistory[index];
+  if (!snapshot) return;
+  screen.editHistoryIndex = index;
+  screen.corners = snapshot.corners.map(point => ({ x: point.x, y: point.y }));
+  screen.params = { ...snapshot.params };
+  screen.source = snapshot.source;
+  screen.image = snapshot.image;
+  screen.fitK = snapshot.fitK;
+  screen.notch = snapshot.notch;
+  screen.activeCorner = -1;
+  screen.interaction = null;
+  imageEditorScreenSyncParamLabels();
+  imageEditorScreenUpdatePreview("full");
+  updateImageEditorControls();
+  imageEditorStatus(`已恢复换屏步骤 ${index + 1} / ${screen.editHistory.length}。`);
+}
+
+function runImageEditorHistory(redo) {
+  if (imageEditorState.mode === "screen") {
+    restoreImageEditorScreenHistory(imageEditorScreen().editHistoryIndex + (redo ? 1 : -1));
+  } else {
+    restoreImageEditorHistory(imageEditorState.historyIndex + (redo ? 1 : -1));
+  }
+}
+
+// 滑杆旁的数值显示，和「美化 / 标注」里的控件保持同一种反馈方式。
+function imageEditorScreenSyncParamLabels() {
+  const params = imageEditorScreen().params;
+  const labels = [
+    ["#imageEditorScreenLightValue", `${Math.round(imageEditorScreenClamp(params.light, 0, 1) * 100)}%`],
+    ["#imageEditorScreenFeatherValue", `${Number(params.feather).toFixed(1)} px`],
+    ["#imageEditorScreenRadiusValue", `${Math.round(params.radius)} px`],
+    ["#imageEditorScreenOpacityValue", `${Math.round(imageEditorScreenClamp(params.opacity, 0, 1) * 100)}%`],
+  ];
+  labels.forEach(([selector, text]) => {
+    const el = $(selector);
+    if (el) el.textContent = text;
+  });
+  const values = [
+    ["#imageEditorScreenLight", Math.round(params.light * 100)],
+    ["#imageEditorScreenFeather", params.feather],
+    ["#imageEditorScreenRadius", params.radius],
+    ["#imageEditorScreenOpacity", Math.round(params.opacity * 100)],
+  ];
+  values.forEach(([selector, value]) => {
+    const input = $(selector);
+    if (input) input.value = String(value);
+  });
+  if ($("#imageEditorScreenFit")) $("#imageEditorScreenFit").value = params.fit;
+  if ($("#imageEditorScreenNotch")) $("#imageEditorScreenNotch").checked = params.notch;
+}
+
+function imageEditorScreenSmoothstep(t) {
+  return t * t * (3 - 2 * t);
+}
+
+function imageEditorScreenDist(a, b) {
+  return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
+// 解 8 元线性方程组，求把 src[4] 映射到 dst[4] 的 3×3 矩阵
+function imageEditorScreenHomography(src, dst) {
+  const a = [];
+  for (let i = 0; i < 4; i++) {
+    const sx = src[i].x, sy = src[i].y, dx = dst[i].x, dy = dst[i].y;
+    a.push([sx, sy, 1, 0, 0, 0, -sx * dx, -sy * dx, dx]);
+    a.push([0, 0, 0, sx, sy, 1, -sx * dy, -sy * dy, dy]);
+  }
+  for (let col = 0; col < 8; col++) {
+    let pivot = col;
+    for (let r = col + 1; r < 8; r++) {
+      if (Math.abs(a[r][col]) > Math.abs(a[pivot][col])) pivot = r;
+    }
+    if (Math.abs(a[pivot][col]) < 1e-10) return null;
+    const tmp = a[col]; a[col] = a[pivot]; a[pivot] = tmp;
+    const p = a[col][col];
+    for (let c = col; c < 9; c++) a[col][c] /= p;
+    for (let r = 0; r < 8; r++) {
+      if (r === col) continue;
+      const f = a[r][col];
+      if (!f) continue;
+      for (let c = col; c < 9; c++) a[r][c] -= f * a[col][c];
+    }
+  }
+  return [a[0][8], a[1][8], a[2][8], a[3][8], a[4][8], a[5][8], a[6][8], a[7][8], 1];
+}
+
+function imageEditorScreenQuadBox(corners, cw, ch, pad) {
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const p of corners) {
+    if (p.x < minX) minX = p.x;
+    if (p.y < minY) minY = p.y;
+    if (p.x > maxX) maxX = p.x;
+    if (p.y > maxY) maxY = p.y;
+  }
+  const x = Math.max(0, Math.floor(minX - pad));
+  const y = Math.max(0, Math.floor(minY - pad));
+  const right = Math.min(cw, Math.ceil(maxX + pad));
+  const bottom = Math.min(ch, Math.ceil(maxY + pad));
+  if (right - x < 1 || bottom - y < 1) return null;
+  return { x, y, width: right - x, height: bottom - y };
+}
+
+function imageEditorScreenQuadCenter(corners) {
+  return {
+    x: (corners[0].x + corners[1].x + corners[2].x + corners[3].x) / 4,
+    y: (corners[0].y + corners[1].y + corners[2].y + corners[3].y) / 4,
+  };
+}
+
+function imageEditorScreenQuadSize(corners) {
+  return {
+    width: (imageEditorScreenDist(corners[0], corners[1]) + imageEditorScreenDist(corners[3], corners[2])) / 2,
+    height: (imageEditorScreenDist(corners[0], corners[3]) + imageEditorScreenDist(corners[1], corners[2])) / 2,
+  };
+}
+
+function imageEditorScreenPointInQuad(point, corners) {
+  let sign = 0;
+  for (let i = 0; i < 4; i++) {
+    const a = corners[i], b = corners[(i + 1) % 4];
+    const cross = (b.x - a.x) * (point.y - a.y) - (b.y - a.y) * (point.x - a.x);
+    if (Math.abs(cross) < 1e-9) continue;
+    const s = cross > 0 ? 1 : -1;
+    if (!sign) sign = s;
+    else if (s !== sign) return false;
+  }
+  return true;
+}
+
+// 无论按什么顺序点角，都整理成 左上 → 右上 → 右下 → 左下
+function imageEditorScreenNormalizeCorners() {
+  const screen = imageEditorScreen();
+  if (screen.corners.length !== 4) return;
+  const center = imageEditorScreenQuadCenter(screen.corners);
+  const sorted = screen.corners.slice().sort((a, b) =>
+    Math.atan2(a.y - center.y, a.x - center.x) - Math.atan2(b.y - center.y, b.x - center.x));
+  let startIndex = 0, best = Infinity;
+  sorted.forEach((p, i) => {
+    const d = Math.abs(Math.atan2(p.y - center.y, p.x - center.x) - (-Math.PI * 0.75));
+    if (d < best) { best = d; startIndex = i; }
+  });
+  screen.corners = [0, 1, 2, 3].map(i => sorted[(startIndex + i) % 4]);
+}
+
+// 屏幕内部的光照分布：只统计四边形内部的像素，外部格子用邻居扩散填充。
+// 直接把包围盒做低通会让黑色边框与刘海的暗度渗进来，把屏幕边缘压暗出一圈灰带。
+// data 复用调用方已经读到的包围盒像素：这里再 getImageData 一次等于多付一次
+// GPU 回读，拖动预览时最明显。
+function imageEditorScreenBuildLightField(bbox, H, sw, sh, data) {
+  const SW = 24;
+  const SH = Math.max(6, Math.round(SW * bbox.height / Math.max(1, bbox.width)));
+  const cellW = bbox.width / SW;
+  const cellH = bbox.height / SH;
+  const sum = new Float64Array(SW * SH);
+  const count = new Int32Array(SW * SH);
+
+  const step = Math.max(1, Math.floor(Math.min(bbox.width, bbox.height) / 240));
+  const insetU = sw * 0.05;
+  const insetV = sh * 0.05;
+  for (let y = 0; y < bbox.height; y += step) {
+    const Y = bbox.y + y + 0.5;
+    for (let x = 0; x < bbox.width; x += step) {
+      const X = bbox.x + x + 0.5;
+      const w = H[6] * X + H[7] * Y + 1;
+      if (Math.abs(w) < 1e-9) continue;
+      const u = (H[0] * X + H[1] * Y + H[2]) / w;
+      const v = (H[3] * X + H[4] * Y + H[5]) / w;
+      if (u < insetU || u > sw - insetU || v < insetV || v > sh - insetV) continue;
+      const k = Math.min(SH - 1, (y / cellH) | 0) * SW + Math.min(SW - 1, (x / cellW) | 0);
+      const pi = (y * bbox.width + x) * 4;
+      sum[k] += 0.299 * data[pi] + 0.587 * data[pi + 1] + 0.114 * data[pi + 2];
+      count[k]++;
+    }
+  }
+
+  const cell = new Float64Array(SW * SH);
+  let lumSum = 0, lumCount = 0;
+  for (let k = 0; k < cell.length; k++) {
+    if (count[k]) { cell[k] = sum[k] / count[k]; lumSum += cell[k]; lumCount++; }
+    else cell[k] = -1;
+  }
+  for (let iter = 0; iter < 14; iter++) {
+    const next = cell.slice();
+    let empty = false;
+    for (let j = 0; j < SH; j++) {
+      for (let i = 0; i < SW; i++) {
+        const k = j * SW + i;
+        if (cell[k] >= 0) continue;
+        empty = true;
+        let s = 0, c = 0;
+        for (let dj = -1; dj <= 1; dj++) {
+          for (let di = -1; di <= 1; di++) {
+            const nj = j + dj, ni = i + di;
+            if (nj < 0 || ni < 0 || nj >= SH || ni >= SW) continue;
+            const nk = nj * SW + ni;
+            if (cell[nk] >= 0) { s += cell[nk]; c++; }
+          }
+        }
+        if (c) next[k] = s / c;
+      }
+    }
+    cell.set(next);
+    if (!empty) break;
+  }
+  for (let k = 0; k < cell.length; k++) if (cell[k] < 0) cell[k] = 200;
+
+  const field = new Float32Array(bbox.width * bbox.height);
+  for (let y = 0; y < bbox.height; y++) {
+    const fy = Math.min(Math.max((y + 0.5) / cellH - 0.5, 0), SH - 1);
+    const j0 = fy | 0;
+    const j1 = Math.min(j0 + 1, SH - 1);
+    const ty = fy - j0;
+    const rowBase = y * bbox.width;
+    for (let x = 0; x < bbox.width; x++) {
+      const fx = Math.min(Math.max((x + 0.5) / cellW - 0.5, 0), SW - 1);
+      const i0 = fx | 0;
+      const i1 = Math.min(i0 + 1, SW - 1);
+      const tx = fx - i0;
+      const a = cell[j0 * SW + i0] * (1 - tx) + cell[j0 * SW + i1] * tx;
+      const b = cell[j1 * SW + i0] * (1 - tx) + cell[j1 * SW + i1] * tx;
+      field[rowBase + x] = a * (1 - ty) + b * ty;
+    }
+  }
+  return { field, avg: lumCount ? lumSum / lumCount : 128 };
+}
+
+// MacBook 屏幕顶部的刘海是硬件特征，被截图盖住会变矮。
+// 沿屏幕上边界扫一条浅带，找「明显比周围暗、宽度像刘海、位置居中」的连续列。
+function imageEditorScreenDetectNotch(base, corners) {
+  const tl = corners[0], tr = corners[1], bl = corners[3];
+  const wTop = Math.hypot(tr.x - tl.x, tr.y - tl.y);
+  const hLeft = Math.hypot(bl.x - tl.x, bl.y - tl.y);
+  if (wTop < 80 || hLeft < 60) return null;
+  const down = { x: (bl.x - tl.x) / hLeft, y: (bl.y - tl.y) / hLeft };
+  const scanDepth = Math.max(8, hLeft * 0.08);
+
+  const minX = Math.floor(Math.min(tl.x, tr.x) - 6);
+  const maxX = Math.ceil(Math.max(tl.x, tr.x) + 6);
+  const minY = Math.floor(Math.min(tl.y, tr.y) - 6);
+  const maxY = Math.ceil(Math.max(tl.y, tr.y) + scanDepth * 2 + 6);
+  const rw = maxX - minX, rh = maxY - minY;
+  if (rw < 8 || rh < 8) return null;
+
+  const ctx = base.getContext("2d", { willReadFrequently: true });
+  const region = ctx.getImageData(minX, minY, rw, rh).data;
+  const lumAt = (x, y) => {
+    const sx = Math.round(x - minX), sy = Math.round(y - minY);
+    if (sx < 0 || sy < 0 || sx >= rw || sy >= rh) return -1;
+    const i = (sy * rw + sx) * 4;
+    return 0.299 * region[i] + 0.587 * region[i + 1] + 0.114 * region[i + 2];
+  };
+
+  const N = 256;
+  const colLum = new Float32Array(N);
+  // 只探上边界下方很浅的一层：这层一定落在刘海内部（或刘海两侧的屏幕内容），
+  // 不会吃到刘海下方的屏幕内容；用平均值而不是最小值，
+  // 否则屏幕上的深色文字会被误判成刘海，把左右边界撑宽
+  const shallow = Math.max(5, hLeft * 0.014);
+  for (let i = 0; i < N; i++) {
+    const t = (i + 0.5) / N;
+    const px = tl.x + (tr.x - tl.x) * t;
+    const py = tl.y + (tr.y - tl.y) * t;
+    let sum = 0, cnt = 0;
+    for (let d = 3; d <= shallow; d += 1) {
+      const l = lumAt(px + down.x * d, py + down.y * d);
+      if (l >= 0) { sum += l; cnt++; }
+    }
+    colLum[i] = cnt ? sum / cnt : 255;
+  }
+  const sorted = Array.from(colLum).sort((a, b) => a - b);
+  const bright = sorted[Math.floor(sorted.length * 0.8)];
+  const threshold = Math.max(60, bright * 0.5);
+
+  let best = null, start = -1;
+  for (let i = 0; i <= N; i++) {
+    const dark = i < N && colLum[i] < threshold;
+    if (dark && start < 0) start = i;
+    if (!dark && start >= 0) {
+      const len = i - start;
+      const center = (start + i - 1) / (2 * (N - 1));
+      if (len >= N * 0.04 && len <= N * 0.45 && center > 0.25 && center < 0.75) {
+        if (!best || len > best.len) best = { start, end: i - 1, len };
+      }
+      start = -1;
+    }
+  }
+  if (!best) return null;
+
+  const mid = Math.round((best.start + best.end) / 2);
+  let depthSum = 0, depthCount = 0;
+  for (let i = mid - 4; i <= mid + 4; i++) {
+    if (i < 0 || i >= N) continue;
+    const t = (i + 0.5) / N;
+    const px = tl.x + (tr.x - tl.x) * t;
+    const py = tl.y + (tr.y - tl.y) * t;
+    let lastDark = 0;
+    for (let d = 1; d <= scanDepth * 2; d += 1) {
+      const l = lumAt(px + down.x * d, py + down.y * d);
+      if (l < 0) break;
+      if (l < threshold) lastDark = d;
+    }
+    depthSum += lastDark;
+    depthCount++;
+  }
+  const depth = depthCount ? depthSum / depthCount : 0;
+  if (depth < 4) return null;
+
+  const up = { x: (tr.x - tl.x) / wTop, y: (tr.y - tl.y) / wTop };
+  const pad = 3;   // 左右各留一点余量，多出来的部分交给亮度判断去覆盖
+  const coreA0 = (best.start / N) * wTop;
+  const coreA1 = ((best.end + 1) / N) * wTop;
+  const a0 = Math.max(0, coreA0 - pad);
+  const a1 = Math.min(wTop, coreA1 + pad);
+  // 纵向不加余量：底边是「平直与否」最敏感的地方，多出的余量会把底边
+  // 下方的屏幕内容也划进刘海范围，保留下来就是一道亮边。
+  const b1 = depth;
+  const cornerAt = (a, b) => ({ x: tl.x + up.x * a + down.x * b, y: tl.y + up.y * a + down.y * b });
+  const pts = [cornerAt(a0, 0), cornerAt(a1, 0), cornerAt(a0, b1), cornerAt(a1, b1)];
+  return {
+    origin: tl,
+    up,
+    down,
+    a0,
+    a1,
+    // 真实暗区的横向范围。左右 pad 只用于抗锯齿，不能让亮度噪声
+    // 反过来影响整条底边。
+    coreA0,
+    coreA1,
+    b1,
+    radius: imageEditorScreenClamp(depth * 0.42, 3, 14),
+    lo: 48,          // 低于此亮度视为刘海本体，保留原图
+    hi: 135,         // 高于此亮度视为屏幕内容，正常被截图覆盖
+    box: {
+      x0: Math.min(pts[0].x, pts[1].x, pts[2].x, pts[3].x),
+      x1: Math.max(pts[0].x, pts[1].x, pts[2].x, pts[3].x),
+      y0: Math.min(pts[0].y, pts[1].y, pts[2].y, pts[3].y),
+      y1: Math.max(pts[0].y, pts[1].y, pts[2].y, pts[3].y),
+    },
+  };
+}
+
+// 把截图按四角透视贴到 target 上（就地修改）。
+// 刘海处：形状由几何圆角矩形决定（下边是平直线），形状内部的像素再用原图亮度区分保留还是覆盖。
+function imageEditorScreenComposite(target, corners, shot, params, scale, notch) {
+  if (!corners || corners.length !== 4 || !shot) return;
+  const ctx = target.getContext("2d", { willReadFrequently: true });
+  const cw = target.width, ch = target.height;
+  const sw = shot.width, sh = shot.height;
+  // 逐像素合成后，刘海用连续的 Canvas 路径一次裁切回原图。
+  // 先保留合成前的画面，避免原图抗锯齿和手写羽化重复叠加。
+  const notchBase = notch ? cloneCanvas(target) : null;
+
+  const feather = Math.max(0.5, params.feather * scale);
+  const radius = Math.max(0, params.radius * scale);
+  const opacity = imageEditorScreenClamp(params.opacity, 0, 1);
+  const lightK = imageEditorScreenClamp(params.light, 0, 1);
+
+  let quad = corners;
+  if (params.fit === "contain") {
+    const center = imageEditorScreenQuadCenter(corners);
+    const size = imageEditorScreenQuadSize(corners);
+    const shotAR = sw / sh;
+    let kx = 1, ky = 1;
+    if (size.width / Math.max(1, size.height) > shotAR) {
+      kx = (size.height * shotAR) / Math.max(1, size.width);
+    } else {
+      ky = (size.width / shotAR) / Math.max(1, size.height);
+    }
+    quad = corners.map(p => ({ x: center.x + (p.x - center.x) * kx, y: center.y + (p.y - center.y) * ky }));
+  }
+
+  const bbox = imageEditorScreenQuadBox(quad, cw, ch, feather + radius + 4);
+  if (!bbox) return;
+
+  const H = imageEditorScreenHomography(
+    quad,
+    [{ x: 0, y: 0 }, { x: sw, y: 0 }, { x: sw, y: sh }, { x: 0, y: sh }]
+  );
+  if (!H) return;
+
+  const targetData = ctx.getImageData(bbox.x, bbox.y, bbox.width, bbox.height);
+  const td = targetData.data;
+  const sd = shot.data;
+
+  let light = null;
+  let avgLum = 128;
+  if (lightK > 0.001) {
+    const field = imageEditorScreenBuildLightField(bbox, H, sw, sh, td);
+    light = field.field;
+    avgLum = Math.max(1, field.avg);
+  }
+
+  const h0 = H[0], h1 = H[1], h2 = H[2], h3 = H[3], h4 = H[4], h5 = H[5], h6 = H[6], h7 = H[7];
+  const bw = bbox.width, bh = bbox.height, ox = bbox.x, oy = bbox.y;
+  const maxU = sw - 1, maxV = sh - 1;
+
+  for (let y = 0; y < bh; y++) {
+    const Y = oy + y + 0.5;
+    const rowOff = y * bw;
+    for (let x = 0; x < bw; x++) {
+      const X = ox + x + 0.5;
+      const w = h6 * X + h7 * Y + 1;
+      if (w < 1e-9) continue;
+      const u = (h0 * X + h1 * Y + h2) / w;
+      const v = (h3 * X + h4 * Y + h5) / w;
+
+      // ∂u/∂X、∂v/∂Y：一个目标像素对应多少截图像素，用来换算羽化与圆角宽度
+      const du = Math.abs((h0 - u * h6) / w) || 1e-6;
+      const dv = Math.abs((h4 - v * h7) / w) || 1e-6;
+      const marginU = (feather + 3) * du;
+      const marginV = (feather + 3) * dv;
+      if (u < -marginU || u > maxU + marginU || v < -marginV || v > maxV + marginV) continue;
+
+      let d = Math.min(u / du, (maxU - u) / du, v / dv, (maxV - v) / dv);
+      // 斜边要同时覆盖边界内外的半个像素。只算内侧会把外侧直接截断，
+      // 透视后的上下边就会呈现明显阶梯。
+      const rasterAA = Math.max(0.8, scale);
+      if (d < -rasterAA) continue;
+      if (radius > 0.001) {
+        const rU = radius * du, rV = radius * dv;
+        const uu = u < rU ? u : (u > maxU - rU ? maxU - u : -1);
+        const vv = v < rV ? v : (v > maxV - rV ? maxV - v : -1);
+        if (uu >= 0 && vv >= 0) {
+          const t = Math.hypot((rU - uu) / rU, (rV - vv) / rV);
+          d = Math.min(d, (1 - t) * radius);
+          if (d < -rasterAA) continue;
+        }
+      }
+      let cover = imageEditorScreenSmoothstep(
+        imageEditorScreenClamp((d + rasterAA) / (feather + rasterAA * 2), 0, 1)
+      ) * opacity;
+      if (cover <= 0.0015) continue;
+
+      // 双线性采样截图；透明像素（例如窗口圆角）不覆盖原图
+      const ux = u < 0 ? 0 : (u > maxU ? maxU : u);
+      const vy = v < 0 ? 0 : (v > maxV ? maxV : v);
+      const x0 = ux | 0, y0 = vy | 0;
+      const x1 = x0 < maxU ? x0 + 1 : x0;
+      const y1 = y0 < maxV ? y0 + 1 : y0;
+      const fx = ux - x0, fy = vy - y0;
+      const w00 = (1 - fx) * (1 - fy), w10 = fx * (1 - fy);
+      const w01 = (1 - fx) * fy, w11 = fx * fy;
+      const i00 = (y0 * sw + x0) * 4, i10 = (y0 * sw + x1) * 4;
+      const i01 = (y1 * sw + x0) * 4, i11 = (y1 * sw + x1) * 4;
+      const sa = (sd[i00 + 3] * w00 + sd[i10 + 3] * w10 + sd[i01 + 3] * w01 + sd[i11 + 3] * w11) / 255;
+      const alpha = cover * sa;
+      if (alpha <= 0.0015) continue;
+
+      let cr = sd[i00] * w00 + sd[i10] * w10 + sd[i01] * w01 + sd[i11] * w11;
+      let cg = sd[i00 + 1] * w00 + sd[i10 + 1] * w10 + sd[i01 + 1] * w01 + sd[i11 + 1] * w11;
+      let cb = sd[i00 + 2] * w00 + sd[i10 + 2] * w10 + sd[i01 + 2] * w01 + sd[i11 + 2] * w11;
+
+      if (light) {
+        const f = 1 + (imageEditorScreenClamp(light[rowOff + x] / avgLum, 0.35, 1.9) - 1) * lightK;
+        cr *= f; cg *= f; cb *= f;
+      }
+
+      const ti = (rowOff + x) * 4;
+      const inv = 1 - alpha;
+      td[ti] = cr * alpha + td[ti] * inv;
+      td[ti + 1] = cg * alpha + td[ti + 1] * inv;
+      td[ti + 2] = cb * alpha + td[ti + 2] * inv;
+      td[ti + 3] = 255 * alpha + td[ti + 3] * inv;
+    }
+  }
+  ctx.putImageData(targetData, bbox.x, bbox.y);
+  if (notchBase) imageEditorScreenDrawNotchOverlay(ctx, notchBase, notch, scale);
+}
+
+function nBoxActive(notch, X, Y) {
+  if (!notch) return false;
+  const box = notch.box;
+  return X >= box.x0 && X <= box.x1 && Y >= box.y0 && Y <= box.y1;
+}
+
+// —— 换屏：吸附精修、截图适配、预览、覆盖层、放大镜 ——
+
+function imageEditorScreenSampleLum(data, w, h, x, y) {
+  if (x < 0 || y < 0 || x > w - 1 || y > h - 1) return -1;
+  const x0 = x | 0, y0 = y | 0;
+  const x1 = x0 < w - 1 ? x0 + 1 : x0;
+  const y1 = y0 < h - 1 ? y0 + 1 : y0;
+  const fx = x - x0, fy = y - y0;
+  const lumOf = i => 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+  const a = lumOf((y0 * w + x0) * 4) * (1 - fx) + lumOf((y0 * w + x1) * 4) * fx;
+  const b = lumOf((y1 * w + x0) * 4) * (1 - fx) + lumOf((y1 * w + x1) * 4) * fx;
+  return a * (1 - fy) + b * fy;
+}
+
+// 在 p1→p2 附近沿法向搜索亮度梯度峰值，加权最小二乘拟合出一条精细边线
+function imageEditorScreenFitEdgeLine(data, w, h, p1, p2) {
+  const dx = p2.x - p1.x, dy = p2.y - p1.y;
+  const len = Math.hypot(dx, dy);
+  if (len < 16) return null;
+  const nx = -dy / len, ny = dx / len;
+  const R = 10;
+  const count = Math.max(10, Math.min(36, Math.round(len / 14)));
+  const samples = [];
+
+  for (let s = 0; s < count; s++) {
+    const t = (s + 0.5) / count;
+    if (t < 0.1 || t > 0.9) continue;
+    const bx = p1.x + dx * t, by = p1.y + dy * t;
+    const profile = [];
+    let valid = true;
+    for (let o = -R; o <= R; o++) {
+      const lum = imageEditorScreenSampleLum(data, w, h, bx + nx * o, by + ny * o);
+      if (lum < 0) { valid = false; break; }
+      profile.push(lum);
+    }
+    if (!valid) continue;
+    const grads = [];
+    let bestIndex = -1, bestGrad = 0;
+    for (let i = 1; i < profile.length; i++) {
+      const g = Math.abs(profile[i] - profile[i - 1]);
+      grads.push(g);
+      if (g > bestGrad) { bestGrad = g; bestIndex = i - 1; }
+    }
+    if (bestIndex < 0 || bestGrad < 6) continue;
+    const gm = bestIndex > 0 ? grads[bestIndex - 1] : bestGrad;
+    const gp = bestIndex < grads.length - 1 ? grads[bestIndex + 1] : bestGrad;
+    const denom = gm - 2 * bestGrad + gp;
+    const delta = Math.abs(denom) > 1e-9 ? 0.5 * (gm - gp) / denom : 0;
+    const offset = (bestIndex + 1 + delta) - R;
+    if (Math.abs(offset) > R - 1) continue;
+    samples.push({ t, off: offset, weight: bestGrad });
+  }
+  if (samples.length < 4) return null;
+
+  let sw = 0, st = 0, so = 0, stt = 0, sto = 0;
+  for (const s of samples) {
+    const weight = s.weight;
+    sw += weight; st += weight * s.t; so += weight * s.off;
+    stt += weight * s.t * s.t; sto += weight * s.t * s.off;
+  }
+  const den = sw * stt - st * st;
+  const slope = Math.abs(den) < 1e-9 ? 0 : (sw * sto - st * so) / den;
+  const base = (so - slope * st) / sw;
+  return {
+    p: { x: p1.x + nx * base, y: p1.y + ny * base },
+    d: { x: dx + nx * slope, y: dy + ny * slope },
+  };
+}
+
+function imageEditorScreenIntersectLines(l1, l2) {
+  const den = l1.d.x * l2.d.y - l1.d.y * l2.d.x;
+  if (Math.abs(den) < 1e-9) return null;
+  const t = ((l2.p.x - l1.p.x) * l2.d.y - (l2.p.y - l1.p.y) * l2.d.x) / den;
+  return { x: l1.p.x + l1.d.x * t, y: l1.p.y + l1.d.y * t };
+}
+
+function imageEditorScreenRefine(indices, maxShift) {
+  const screen = imageEditorScreen();
+  if (screen.corners.length !== 4 || !imageEditorState.hasImage) return 0;
+  const limit = maxShift === undefined ? 24 : maxShift;
+  const doc = imageEditorState.documentCanvas;
+  if (!screen.baseData) {
+    const ctx = doc.getContext("2d", { willReadFrequently: true });
+    screen.baseData = ctx.getImageData(0, 0, doc.width, doc.height).data;
+  }
+  const data = screen.baseData, w = doc.width, h = doc.height;
+  const corners = screen.corners;
+  const lines = [];
+  for (let i = 0; i < 4; i++) {
+    lines.push(imageEditorScreenFitEdgeLine(data, w, h, corners[i], corners[(i + 1) % 4]));
+  }
+  const targets = indices || [0, 1, 2, 3];
+  const next = corners.map(p => ({ x: p.x, y: p.y }));
+  let moved = 0;
+  for (const index of targets) {
+    const prevLine = lines[(index + 3) % 4];
+    const nextLine = lines[index];
+    if (!prevLine || !nextLine) continue;
+    const point = imageEditorScreenIntersectLines(prevLine, nextLine);
+    if (!point) continue;
+    if (Math.hypot(point.x - corners[index].x, point.y - corners[index].y) > limit) continue;
+    next[index] = point;
+    moved++;
+  }
+  if (moved) {
+    screen.corners = next;
+    imageEditorScreenSchedule("fast");
+    imageEditorScreenSchedule("full");
+  }
+  return moved;
+}
+
+// 截图通常比目标区域大，先按目标尺寸的 1.5 倍降采样，兼顾清晰度与采样速度
+function imageEditorScreenPrepareShot() {
+  const screen = imageEditorScreen();
+  const source = screen.source;
+  if (!source) { screen.image = null; screen.fitK = 0; return; }
+  if (screen.corners.length !== 4) {
+    if (screen.image && screen.fitK === -1) return;
+    screen.fitK = -1;
+    const ctx = source.getContext("2d", { willReadFrequently: true });
+    screen.image = {
+      canvas: source,
+      data: ctx.getImageData(0, 0, source.width, source.height).data,
+      width: source.width,
+      height: source.height,
+    };
+    return;
+  }
+  const size = imageEditorScreenQuadSize(screen.corners);
+  const k = Math.min(1, (size.width * 1.5) / source.width, (size.height * 1.5) / source.height);
+  if (screen.image && screen.fitK > 0 && Math.abs(k - screen.fitK) < 0.08) return;
+  let target = source;
+  if (k < 0.98) {
+    const scaled = document.createElement("canvas");
+    scaled.width = Math.max(1, Math.round(source.width * k));
+    scaled.height = Math.max(1, Math.round(source.height * k));
+    const sctx = scaled.getContext("2d");
+    sctx.imageSmoothingEnabled = true;
+    sctx.imageSmoothingQuality = "high";
+    sctx.drawImage(source, 0, 0, scaled.width, scaled.height);
+    target = scaled;
+  }
+  screen.fitK = k;
+  const ctx = target.getContext("2d", { willReadFrequently: true });
+  screen.image = {
+    canvas: target,
+    data: ctx.getImageData(0, 0, target.width, target.height).data,
+    width: target.width,
+    height: target.height,
+  };
+}
+
+function imageEditorScreenEnsureCanvases() {
+  const screen = imageEditorScreen();
+  const doc = imageEditorState.documentCanvas;
+  if (!screen.fastCanvas) screen.fastCanvas = document.createElement("canvas");
+  if (!screen.fullCanvas) screen.fullCanvas = document.createElement("canvas");
+  const maxDim = Math.max(doc.width, doc.height);
+  screen.previewScale = Math.min(1, IMAGE_EDITOR_SCREEN_PREVIEW_MAX / Math.max(1, maxDim));
+  screen.fastCanvas.width = Math.max(1, Math.round(doc.width * screen.previewScale));
+  screen.fastCanvas.height = Math.max(1, Math.round(doc.height * screen.previewScale));
+  screen.fullCanvas.width = doc.width;
+  screen.fullCanvas.height = doc.height;
+}
+
+// —— 拖动顶点时的实时预览 ——
+// 全程走 GPU 的 drawImage：把截图切成网格，每个小格用两个仿射三角形贴过去。
+// 这样拖动时既跟手、又保持底图的原分辨率，不会像低分辨率预览那样把画面糊掉；
+// 松手后再用逐像素合成给出精确结果（羽化、光照、刘海都在那一步算准）。
+
+function imageEditorScreenBlitTriangle(ctx, image, s0, s1, s2, d0, d1, d2) {
+  const denom = (s1.x - s0.x) * (s2.y - s0.y) - (s2.x - s0.x) * (s1.y - s0.y);
+  if (Math.abs(denom) < 1e-9) return;
+  const a = ((d1.x - d0.x) * (s2.y - s0.y) - (d2.x - d0.x) * (s1.y - s0.y)) / denom;
+  const b = ((d2.x - d0.x) * (s1.x - s0.x) - (d1.x - d0.x) * (s2.x - s0.x)) / denom;
+  const c = ((d1.y - d0.y) * (s2.y - s0.y) - (d2.y - d0.y) * (s1.y - s0.y)) / denom;
+  const d = ((d2.y - d0.y) * (s1.x - s0.x) - (d1.y - d0.y) * (s2.x - s0.x)) / denom;
+  const e = d0.x - a * s0.x - b * s0.y;
+  const f = d0.y - c * s0.x - d * s0.y;
+  // 裁剪路径向外扩约 1px：相邻三角形的抗锯齿边会让出半透明缝，
+  // 不扩就会看到网格纹路。纹理仍是按原顶点仿射，边缘只差 1px，看不出变形。
+  const cx = (d0.x + d1.x + d2.x) / 3;
+  const cy = (d0.y + d1.y + d2.y) / 3;
+  const grow = (p) => {
+    const dx = p.x - cx, dy = p.y - cy;
+    const len = Math.hypot(dx, dy) || 1;
+    return { x: p.x + dx / len * 1.15, y: p.y + dy / len * 1.15 };
+  };
+  const q0 = grow(d0), q1 = grow(d1), q2 = grow(d2);
+  ctx.save();
+  ctx.beginPath();
+  ctx.moveTo(q0.x, q0.y);
+  ctx.lineTo(q1.x, q1.y);
+  ctx.lineTo(q2.x, q2.y);
+  ctx.closePath();
+  ctx.clip();
+  ctx.transform(a, c, b, d, e, f);
+  ctx.drawImage(image, 0, 0);
+  ctx.restore();
+}
+
+function imageEditorScreenDrawMeshPreview(ctx, quad, shotCanvas, cols = 10, rows = 10) {
+  const sw = shotCanvas.width, sh = shotCanvas.height;
+  const H = imageEditorScreenHomography(
+    [{ x: 0, y: 0 }, { x: sw, y: 0 }, { x: sw, y: sh }, { x: 0, y: sh }],
+    quad
+  );
+  if (!H) return;
+  const mapPoint = (u, v) => {
+    const w = H[6] * u + H[7] * v + 1;
+    return { x: (H[0] * u + H[1] * v + H[2]) / w, y: (H[3] * u + H[4] * v + H[5]) / w };
+  };
+  // 整块裁剪到屏幕四边形内：网格是分片近似的，边缘会有几像素外溢，
+  // 贴着四角裁掉才不会看到贴图越出屏幕。
+  ctx.save();
+  ctx.beginPath();
+  ctx.moveTo(quad[0].x, quad[0].y);
+  for (let i = 1; i < 4; i++) ctx.lineTo(quad[i].x, quad[i].y);
+  ctx.closePath();
+  ctx.clip();
+  for (let j = 0; j < rows; j++) {
+    for (let i = 0; i < cols; i++) {
+      const u0 = (i / cols) * sw, u1 = ((i + 1) / cols) * sw;
+      const v0 = (j / rows) * sh, v1 = ((j + 1) / rows) * sh;
+      const p00 = mapPoint(u0, v0), p10 = mapPoint(u1, v0);
+      const p11 = mapPoint(u1, v1), p01 = mapPoint(u0, v1);
+      imageEditorScreenBlitTriangle(ctx, shotCanvas,
+        { x: u0, y: v0 }, { x: u1, y: v0 }, { x: u1, y: v1 }, p00, p10, p11);
+      imageEditorScreenBlitTriangle(ctx, shotCanvas,
+        { x: u0, y: v0 }, { x: u1, y: v1 }, { x: u0, y: v1 }, p00, p11, p01);
+    }
+  }
+  ctx.restore();
+}
+
+// 用一条连续矢量路径把刘海原图还原。Canvas 统一处理底边和两侧圆角的
+// 像素覆盖率，避免逐像素亮度判定造成灰边、断层或块状过渡。
+function imageEditorScreenDrawNotchOverlay(ctx, doc, notch = imageEditorScreen().notch, scale = 1) {
+  if (!notch) return;
+  const up = notch.up;
+  const perpX = -up.y, perpY = up.x;
+  const oy = notch.origin.y * scale, ox = notch.origin.x * scale;
+  const a0 = notch.coreA0 * scale;
+  const nW = Math.max(1, (notch.coreA1 - notch.coreA0) * scale);
+  const nH = Math.max(1, notch.b1 * scale);
+  const nR = Math.min(notch.radius * scale, nW / 2, nH / 2);
+  const at = (lx, ly) => ({
+    x: ox + up.x * (a0 + lx) + perpX * ly,
+    y: oy + up.y * (a0 + lx) + perpY * ly,
+  });
+  const p0 = at(0, 0), p1 = at(nW, 0), p2 = at(nW, nH - nR);
+  const p3 = at(nW - nR, nH), p4 = at(nR, nH), p5 = at(0, nH - nR);
+  ctx.save();
+  ctx.beginPath();
+  ctx.moveTo(p0.x, p0.y);
+  ctx.lineTo(p1.x, p1.y);
+  ctx.lineTo(p2.x, p2.y);
+  const r1 = at(nW, nH);
+  ctx.quadraticCurveTo(r1.x, r1.y, p3.x, p3.y);
+  ctx.lineTo(p4.x, p4.y);
+  const r2 = at(0, nH);
+  ctx.quadraticCurveTo(r2.x, r2.y, p5.x, p5.y);
+  ctx.closePath();
+  ctx.clip();
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(doc, 0, 0);
+  ctx.restore();
+}
+
+// 快速预览：底图 + 网格贴图 + 刘海还原，全部按原分辨率绘制。
+function imageEditorScreenUpdateMeshPreview() {
+  const screen = imageEditorScreen();
+  if (!imageEditorState.hasImage || imageEditorState.mode !== "screen") return;
+  imageEditorScreenEnsureCanvases();
+  const doc = imageEditorState.documentCanvas;
+  const canvas = screen.fullCanvas;
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(screen.baseCanvas || doc, 0, 0);
+  if (screen.corners.length === 4 && screen.image && !screen.hideShot) {
+    screen.notch = screen.params.notch && screen.corners.length === 4
+      ? (screen.notch || imageEditorScreenDetectNotch(doc, screen.corners))
+      : null;
+    imageEditorScreenDrawMeshPreview(ctx, screen.corners, screen.image.canvas);
+    if (screen.notch) imageEditorScreenDrawNotchOverlay(ctx, doc, screen.notch, 1);
+  }
+  screen.preview = canvas;
+  renderImageEditorCanvas();
+  imageEditorScreenSyncOverlay();
+}
+
+function imageEditorScreenUpdatePreview(quality) {
+  const screen = imageEditorScreen();
+  if (!imageEditorState.hasImage || imageEditorState.mode !== "screen") return;
+  imageEditorScreenEnsureCanvases();
+  const doc = imageEditorState.documentCanvas;
+  const ready = screen.corners.length === 4 && screen.image && !screen.hideShot;
+  screen.notch = null;
+  if (screen.params.notch && screen.corners.length === 4) {
+    screen.notch = imageEditorScreenDetectNotch(doc, screen.corners);
+  }
+  if (quality === "fast") {
+    const canvas = screen.fastCanvas;
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(doc, 0, 0, canvas.width, canvas.height);
+    if (ready) {
+      const s = screen.previewScale;
+      imageEditorScreenComposite(
+        canvas,
+        screen.corners.map(p => ({ x: p.x * s, y: p.y * s })),
+        screen.image, screen.params, s, screen.notch
+      );
+    }
+    screen.preview = canvas;
+  } else {
+    const canvas = screen.fullCanvas;
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(doc, 0, 0);
+    if (ready) {
+      imageEditorScreenComposite(canvas, screen.corners, screen.image, screen.params, 1, screen.notch);
+    }
+    screen.preview = canvas;
+  }
+  renderImageEditorCanvas();
+  imageEditorScreenSyncOverlay();
+}
+
+function imageEditorScreenSchedule(quality) {
+  const screen = imageEditorScreen();
+  if (quality === "fast") {
+    // 拖动中用网格预览：GPU 绘制、原分辨率，跟手且不糊。
+    if (screen.rafPending) return;
+    screen.rafPending = true;
+    requestAnimationFrame(() => {
+      screen.rafPending = false;
+      imageEditorScreenUpdateMeshPreview();
+    });
+  } else {
+    clearTimeout(screen.fullTimer);
+    screen.fullTimer = setTimeout(() => imageEditorScreenUpdatePreview("full"), 90);
+  }
+}
+
+let imageEditorScreenHandleNodes = null;
+
+function imageEditorScreenSyncOverlay() {
+  const screen = imageEditorScreen();
+  const overlay = $("#imageEditorScreenOverlay");
+  const actions = $("#imageEditorScreenOverlayActions");
+  const active = imageEditorState.mode === "screen" && imageEditorState.hasImage;
+  // SVG 元素上用 JS 给 hidden 赋值不会移除 HTML 的 hidden 属性，这里显式操作
+  if (active) overlay.removeAttribute("hidden");
+  else overlay.setAttribute("hidden", "");
+  if (!active) {
+    actions.hidden = true;
+    return;
+  }
+  const stage = $("#imageEditorStage");
+  const canvas = imageEditorCanvas();
+  const stageRect = stage.getBoundingClientRect();
+  const canvasRect = canvas.getBoundingClientRect();
+  if (!canvasRect.width) return;
+  overlay.style.left = `${canvasRect.left - stageRect.left + stage.scrollLeft}px`;
+  overlay.style.top = `${canvasRect.top - stageRect.top + stage.scrollTop}px`;
+  overlay.style.width = `${canvasRect.width}px`;
+  overlay.style.height = `${canvasRect.height}px`;
+  overlay.setAttribute("viewBox", `0 0 ${canvasRect.width} ${canvasRect.height}`);
+  overlay.style.display = screen.hideOverlay ? "none" : "";
+
+  const k = canvasRect.width / Math.max(1, canvas.width);
+  const group = $("#imageEditorScreenHandles");
+  if (!imageEditorScreenHandleNodes) {
+    group.innerHTML = "";
+    imageEditorScreenHandleNodes = [];
+    for (let i = 0; i < 4; i++) {
+      const circle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+      circle.setAttribute("r", "6");
+      const text = document.createElementNS("http://www.w3.org/2000/svg", "text");
+      group.appendChild(circle);
+      group.appendChild(text);
+      imageEditorScreenHandleNodes.push({ circle, text });
+    }
+  }
+  const polygon = $("#imageEditorScreenPolygon");
+  const count = screen.corners.length;
+  polygon.style.display = count < 3 ? "none" : "";
+  if (count >= 3) {
+    polygon.setAttribute("points", screen.corners.map(p => `${(p.x * k).toFixed(2)},${(p.y * k).toFixed(2)}`).join(" "));
+  }
+  polygon.classList.toggle("is-complete", count === 4);
+  imageEditorScreenHandleNodes.forEach((node, i) => {
+    const show = i < count;
+    node.circle.style.display = show ? "" : "none";
+    node.text.style.display = show ? "" : "none";
+    if (!show) return;
+    const p = screen.corners[i];
+    const cx = p.x * k, cy = p.y * k;
+    node.circle.setAttribute("cx", cx.toFixed(2));
+    node.circle.setAttribute("cy", cy.toFixed(2));
+    node.circle.setAttribute("class", i === screen.activeCorner ? "is-active" : "");
+    node.text.setAttribute("x", (cx + 9).toFixed(2));
+    node.text.setAttribute("y", (cy - 8).toFixed(2));
+    node.text.textContent = String(i + 1);
+  });
+  const ready = count === 4 && Boolean(screen.image) && !screen.hideOverlay;
+  actions.hidden = !ready;
+  if (ready) {
+    const anchor = imageEditorCanvasPointToStage(screen.corners[2]);
+    actions.style.left = `${anchor.x}px`;
+    actions.style.top = `${anchor.y}px`;
+  }
+}
+
+function imageEditorScreenMagnifierVisible() {
+  return !$("#imageEditorScreenMagnifier").hidden;
+}
+
+// 放大镜贴合点位：把「画布坐标里的焦点」投影成舞台内坐标。
+// 位置只由焦点与当前画布几何决定，所以画布缩放 / 滚动后重算就能贴回原处，
+// 不会像直接用鼠标坐标那样在缩放后停在旧位置飘来飘去。
+function imageEditorScreenPlaceMagnifier(center) {
+  const screen = imageEditorScreen();
+  const magnifier = $("#imageEditorScreenMagnifier");
+  const stage = $("#imageEditorStage");
+  const canvas = imageEditorCanvas();
+  const stageRect = stage.getBoundingClientRect();
+  const canvasRect = canvas.getBoundingClientRect();
+  const stageX = canvasRect.left - stageRect.left + stage.scrollLeft +
+    center.x * canvasRect.width / Math.max(1, canvas.width);
+  const stageY = canvasRect.top - stageRect.top + stage.scrollTop +
+    center.y * canvasRect.height / Math.max(1, canvas.height);
+  const size = 170;
+  let left = stageX + 26;
+  let top = stageY - size - 26;
+  if (left + size > Math.max(size, stage.scrollWidth) - 8) left = stageX - size - 26;
+  if (top < stage.scrollTop + 8) top = stageY + 26;
+  magnifier.style.left = `${Math.max(8, left)}px`;
+  magnifier.style.top = `${top}px`;
+  magnifier.hidden = false;
+
+  const ctx = magnifier.querySelector("canvas").getContext("2d");
+  const source = (!screen.hideShot && screen.preview) ? screen.preview : imageEditorState.documentCanvas;
+  const zoom = 8;
+  const side = size / zoom;
+  let sx = center.x - side / 2;
+  let sy = center.y - side / 2;
+  let span = side;
+  if (sx < 0) sx = 0;
+  if (sy < 0) sy = 0;
+  if (sx + span > source.width) sx = Math.max(0, source.width - span);
+  if (sy + span > source.height) sy = Math.max(0, source.height - span);
+  span = Math.min(span, source.width, source.height);
+
+  ctx.imageSmoothingEnabled = false;
+  ctx.clearRect(0, 0, size, size);
+  ctx.drawImage(source, sx, sy, span, span, 0, 0, size, size);
+
+  const px = imageEditorScreenClamp((center.x - sx) / span, 0, 1) * size;
+  const py = imageEditorScreenClamp((center.y - sy) / span, 0, 1) * size;
+  ctx.strokeStyle = "rgba(226, 42, 42, .95)";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(px + 0.5, 0); ctx.lineTo(px + 0.5, size);
+  ctx.moveTo(0, py + 0.5); ctx.lineTo(size, py + 0.5);
+  ctx.stroke();
+  ctx.strokeStyle = "rgba(255, 255, 255, .8)";
+  ctx.beginPath();
+  ctx.moveTo(px + 1.5, 0); ctx.lineTo(px + 1.5, size);
+  ctx.moveTo(0, py + 1.5); ctx.lineTo(size, py + 1.5);
+  ctx.stroke();
+}
+
+// 放大镜跟随指针：定点阶段以光标位置为十字中心，调整角点阶段以该角点为中心。
+// focus 省略时取当前选中的角点。
+function imageEditorScreenShowMagnifier(event, focus = null) {
+  const screen = imageEditorScreen();
+  const center = focus || (screen.activeCorner >= 0 ? screen.corners[screen.activeCorner] : null);
+  if (!center) {
+    screen.magnifierFocus = null;
+    $("#imageEditorScreenMagnifier").hidden = true;
+    return;
+  }
+  screen.magnifierFocus = { x: center.x, y: center.y };
+  imageEditorScreenPlaceMagnifier(screen.magnifierFocus);
+}
+
+// 画布缩放 / 滚动后重算位置；放大镜没显示时什么也不做。
+function imageEditorScreenRefreshMagnifier() {
+  const screen = imageEditorScreen();
+  if (!screen.magnifierFocus) return;
+  if ($("#imageEditorScreenMagnifier").hidden) return;
+  imageEditorScreenPlaceMagnifier(screen.magnifierFocus);
+}
+
+function imageEditorScreenHideMagnifier() {
+  imageEditorScreen().magnifierFocus = null;
+  $("#imageEditorScreenMagnifier").hidden = true;
+}
+
+function imageEditorScreenHitCorner(event) {
+  const screen = imageEditorScreen();
+  if (screen.corners.length !== 4) return -1;
+  const canvas = imageEditorCanvas();
+  const rect = canvas.getBoundingClientRect();
+  const k = rect.width / Math.max(1, canvas.width);
+  let best = -1, bestDist = 14;
+  screen.corners.forEach((p, i) => {
+    const d = Math.hypot(p.x * k + rect.left - event.clientX, p.y * k + rect.top - event.clientY);
+    if (d < bestDist) { bestDist = d; best = i; }
+  });
+  return best;
+}
+
+function imageEditorScreenResetCorners() {
+  const screen = imageEditorScreen();
+  screen.corners = [];
+  screen.activeCorner = -1;
+  screen.interaction = null;
+  screen.baseData = null;
+  imageEditorScreenPrepareShot();
+  imageEditorScreenSyncOverlay();
+  imageEditorScreenSchedule("full");
+  imageEditorScreenHideMagnifier();
+  pushImageEditorScreenHistory();
+  updateImageEditorControls();
+  imageEditorStatus("已清空四角，请依次点击屏幕的左上、右上、右下、左下角。");
+}
+
+function imageEditorScreenApply() {
+  const screen = imageEditorScreen();
+  if (!imageEditorState.hasImage || !screen.image || screen.corners.length !== 4) {
+    imageEditorStatus("请先点好屏幕四角并导入要贴的截图。");
+    return;
+  }
+  if (!screen.notch && screen.params.notch && screen.corners.length === 4) {
+    screen.notch = imageEditorScreenDetectNotch(imageEditorState.documentCanvas, screen.corners);
+  }
+  const doc = imageEditorState.documentCanvas;
+  // 留一份贴合前的底图：再次进入换屏时可以回到这个基准继续调整，
+  // 而不是把已经贴好的画面再叠一次。
+  if (!screen.baseCanvas) {
+    const base = document.createElement("canvas");
+    base.width = doc.width;
+    base.height = doc.height;
+    base.getContext("2d").drawImage(doc, 0, 0);
+    screen.baseCanvas = base;
+  }
+  imageEditorScreenComposite(doc, screen.corners, screen.image, screen.params, 1, screen.notch);
+  // 四角、截图和参数都保留下来，方便回来接着改；只结束当前交互。
+  screen.activeCorner = -1;
+  screen.interaction = null;
+  pushImageEditorHistory();
+  // 记住这次应用对应的历史位置：底图若被别的编辑改动过，historyIndex 会变化，
+  // 就不能再拿旧四角继续合成。
+  screen.appliedHistoryIndex = imageEditorState.historyIndex;
+  setImageEditorMode("view");
+  imageEditorStatus("已应用换屏。再次进入换屏可继续调整四角与参数，也可用 Ctrl/⌘ Z 撤销。");
+}
+
+function imageEditorScreenCancel() {
+  const screen = imageEditorScreen();
+  if (screen.baseCanvas && screen.appliedHistoryIndex === imageEditorState.historyIndex) {
+    imageEditorState.documentCanvas = cloneCanvas(imageEditorState.history[imageEditorState.historyIndex]);
+  }
+  screen.activeCorner = -1;
+  screen.interaction = null;
+  setImageEditorMode("view");
+  imageEditorStatus("已取消本次换屏调整。");
+}
+
+// 再次进入换屏模式：如果底图仍是上次贴合的结果，就回退到贴合前的基准继续编辑；
+// 底图已被别的编辑改过（裁切等）则不能沿用旧四角，清空重来。
+// 返回 true 表示已恢复可继续调整的状态。
+function imageEditorScreenResumeEditing() {
+  const screen = imageEditorScreen();
+  const doc = imageEditorState.documentCanvas;
+  const resumable = screen.baseCanvas &&
+    screen.corners.length === 4 &&
+    screen.image &&
+    screen.appliedHistoryIndex === imageEditorState.historyIndex &&
+    screen.baseCanvas.width === doc.width &&
+    screen.baseCanvas.height === doc.height;
+  if (resumable) {
+    const ctx = doc.getContext("2d");
+    ctx.clearRect(0, 0, doc.width, doc.height);
+    ctx.drawImage(screen.baseCanvas, 0, 0);
+    return true;
+  }
+  if (screen.baseCanvas) {
+    screen.baseCanvas = null;
+    screen.appliedHistoryIndex = null;
+    screen.corners = [];
+    screen.activeCorner = -1;
+    screen.image = null;
+    screen.source = null;
+    screen.fitK = 0;
+    screen.notch = null;
+  }
+  return false;
+}
+
+async function imageEditorScreenLoadFile(file) {
+  if (!file) return;
+  if (!imageEditorState.hasImage) {
+    imageEditorStatus("请先导入底图，再导入要贴上去的截图。");
+    return;
+  }
+  const screen = imageEditorScreen();
+  const url = URL.createObjectURL(file);
+  try {
+    const image = await loadImageSource(url);
+    const canvas = document.createElement("canvas");
+    canvas.width = image.naturalWidth;
+    canvas.height = image.naturalHeight;
+    canvas.getContext("2d").drawImage(image, 0, 0);
+    screen.source = canvas;
+    screen.image = null;
+    screen.fitK = 0;
+    imageEditorScreenPrepareShot();
+    imageEditorScreenSchedule("full");
+    pushImageEditorScreenHistory();
+    updateImageEditorControls();
+    const pending = screen.corners.length === 4
+      ? "按 Enter 或点击画布上的 ✓ 确认。"
+      : "还需要先点完屏幕的四个角。";
+    imageEditorStatus(`截图 ${canvas.width} × ${canvas.height}px 已载入。${pending}`);
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+function imageEditorScreenStatusHint() {
+  const screen = imageEditorScreen();
+  if (screen.corners.length < 4) {
+    const labels = ["左上", "右上", "右下", "左下"];
+    return `换屏：点击屏幕的${labels[screen.corners.length]}角（第 ${screen.corners.length + 1} / 4 个）。点的时候有 8 倍放大镜跟随。`;
+  }
+  if (!screen.image) return "换屏：四个角已就位，现在导入要贴上去的截图。";
+  return "换屏：拖动角点微调，或在右侧调节参数；按 Enter 或点击 ✓ 确认，× 取消。";
+}
+
+// —— 换屏：指针交互 ——
+
+function imageEditorScreenPointerDown(event, point) {
+  const screen = imageEditorScreen();
+  const stage = $("#imageEditorStage");
+  if (screen.corners.length < 4) {
+    screen.corners.push(point);
+    // 定点过程也要有放大镜：十字中心就是刚点的位置，方便下一角对齐。
+    imageEditorScreenShowMagnifier(event, point);
+    if (screen.corners.length === 4) {
+      imageEditorScreenNormalizeCorners();
+      imageEditorScreenPrepareShot();
+      imageEditorScreenSchedule("full");
+      imageEditorStatus("四个角已确定。可以拖动角点微调，或导入要贴的截图。");
+    } else {
+      imageEditorScreenSyncOverlay();
+      imageEditorStatus(imageEditorScreenStatusHint());
+    }
+    pushImageEditorScreenHistory();
+    updateImageEditorControls();
+    event.preventDefault();
+    return;
+  }
+  const corner = imageEditorScreenHitCorner(event);
+  if (corner >= 0) {
+    screen.activeCorner = corner;
+    screen.interaction = {
+      type: "corner",
+      index: corner,
+      origin: screen.corners.map(p => ({ x: p.x, y: p.y })),
+    };
+    stage.style.cursor = "grabbing";
+    imageEditorScreenSyncOverlay();
+    imageEditorScreenShowMagnifier(event);
+    event.preventDefault();
+    return;
+  }
+  if (imageEditorScreenPointInQuad(point, screen.corners)) {
+    screen.activeCorner = -1;
+    screen.interaction = {
+      type: "move",
+      origin: screen.corners.map(p => ({ x: p.x, y: p.y })),
+      start: point,
+    };
+    stage.style.cursor = "move";
+    imageEditorScreenSyncOverlay();
+    event.preventDefault();
+  }
+}
+
+function imageEditorScreenPointerMove(event, point) {
+  const screen = imageEditorScreen();
+  const stage = $("#imageEditorStage");
+  if (!screen.interaction) {
+    if (screen.corners.length < 4) {
+      stage.style.cursor = "crosshair";
+      // 定点阶段放大镜跟着光标走，方便像素级对准屏幕边缘。
+      imageEditorScreenShowMagnifier(event, point);
+      return;
+    }
+    if (imageEditorScreenMagnifierVisible()) imageEditorScreenHideMagnifier();
+    const corner = imageEditorScreenHitCorner(event);
+    stage.style.cursor = corner >= 0
+      ? "grab"
+      : (imageEditorScreenPointInQuad(point, screen.corners) ? "move" : "crosshair");
+    // 悬停到角点上也显示放大镜：和定点阶段一样，方便看清边缘再下手。
+    if (corner >= 0) imageEditorScreenShowMagnifier(event, screen.corners[corner]);
+    return;
+  }
+  if (screen.interaction.type === "corner") {
+    screen.corners[screen.interaction.index] = point;
+  } else {
+    const dx = point.x - screen.interaction.start.x;
+    const dy = point.y - screen.interaction.start.y;
+    screen.corners = screen.interaction.origin.map(p => ({ x: p.x + dx, y: p.y + dy }));
+  }
+  // 拖动中走网格实时预览：底图保持原分辨率，只有顶点和贴图跟着动。
+  imageEditorScreenSchedule("fast");
+  if (screen.interaction.type === "corner") imageEditorScreenShowMagnifier(event);
+  event.preventDefault();
+}
+
+function imageEditorScreenPointerUp() {
+  const screen = imageEditorScreen();
+  if (!screen.interaction) return;
+  const wasCorner = screen.interaction.type === "corner";
+  const index = screen.interaction.index;
+  screen.interaction = null;
+  $("#imageEditorStage").style.cursor = "";
+  imageEditorScreenHideMagnifier();
+  if (wasCorner && screen.autoSnap) {
+    const moved = imageEditorScreenRefine([index], 10);
+    if (moved) imageEditorStatus("已按边缘梯度把角点吸附到最近的边框上。");
+  }
+  imageEditorScreenSchedule("full");
+  pushImageEditorScreenHistory();
+  updateImageEditorControls();
+}
+
+function imageEditorScreenHandleKey(event) {
+  const screen = imageEditorScreen();
+  if (screen.activeCorner < 0 || screen.corners.length !== 4) return;
+  const step = event.shiftKey ? 10 : 1;
+  let dx = 0, dy = 0;
+  if (event.key === "ArrowLeft") dx = -step;
+  else if (event.key === "ArrowRight") dx = step;
+  else if (event.key === "ArrowUp") dy = -step;
+  else if (event.key === "ArrowDown") dy = step;
+  else return;
+  event.preventDefault();
+  screen.corners[screen.activeCorner].x += dx;
+  screen.corners[screen.activeCorner].y += dy;
+  imageEditorScreenSchedule("fast");
+  imageEditorScreenSchedule("full");
+  pushImageEditorScreenHistory();
+}
+
+// —— 换屏：交互（下接 setImageEditorMode）——
+function imageEditorScreenModeMarker() {}
 
 function setImageEditorMode(mode) {
   if (!imageEditorState.hasImage) return;
@@ -5160,7 +7024,24 @@ function setImageEditorMode(mode) {
   imageEditorState.snapGuides = emptySnapGuides();
   $("#imageEditorStage").style.cursor = mode === "inpaint" ? "none" : "";
   if (mode !== "inpaint") hideImageEditorInpaintCursor();
-  renderImageEditorCanvas();
+  let screenResumed = false;
+  if (mode === "screen") {
+    const screen = imageEditorScreen();
+    screen.interaction = null;
+    screen.activeCorner = -1;
+    // 上次应用过贴合且底图没被别的编辑改过：回到基准继续调整。
+    screenResumed = imageEditorScreenResumeEditing();
+    imageEditorScreenPrepareShot();
+    imageEditorScreenUpdatePreview("full");
+    if (!screen.editHistory.length || screenResumed) {
+      screen.editHistory = [];
+      screen.editHistoryIndex = -1;
+      pushImageEditorScreenHistory();
+    }
+  } else {
+    imageEditorScreenHideMagnifier();
+    renderImageEditorCanvas();
+  }
   updateImageEditorControls();
   const message = mode === "remove"
     ? "区段删除：框选后拖动短边可斜切删除区域；接近矩形时会自动吸附。"
@@ -5176,8 +7057,10 @@ function setImageEditorMode(mode) {
             ? "图片融合：导入图 B，然后调节交汇位置、角度和融合宽度。"
           : mode === "gradient"
             ? "渐变：从全透明的起点拖向完全不透明的终点；按住 Shift 可吸附到 45° 倍数角度。"
+        : mode === "screen"
+          ? imageEditorScreenStatusHint()
         : "查看模式：按 C 可快速进入画布裁切。";
-  imageEditorStatus(message);
+  imageEditorStatus(screenResumed ? "已回到上次的贴合状态，可以继续调整四角与参数。" : message);
   $("#imageEditorStage").focus();
 }
 
@@ -5285,6 +7168,10 @@ function resizeBoundsWithModifiers(original, handle, point, {
 function imageEditorPointerDown(event) {
   if (!imageEditorState.hasImage || event.button > 0) return;
   if (event.target.closest(".image-editor-selection-actions")) return;
+  if (imageEditorState.mode === "screen") {
+    imageEditorScreenPointerDown(event, imageEditorPointerPosition(event));
+    return;
+  }
   imageEditorState.snapGuides = emptySnapGuides();
   const point = imageEditorPointerPosition(event);
   if (imageEditorState.mode === "gradient") {
@@ -5415,6 +7302,10 @@ function shearImageEditorSelection(interaction, point) {
 
 function imageEditorPointerMove(event) {
   updateImageEditorInpaintCursor(event.clientX, event.clientY);
+  if (imageEditorState.mode === "screen") {
+    imageEditorScreenPointerMove(event, imageEditorPointerPosition(event));
+    return;
+  }
   if (!imageEditorState.interaction) {
     const selection = imageEditorState.selection;
     if (selection && ["remove", "crop", "cover"].includes(imageEditorState.mode)) {
@@ -5487,6 +7378,10 @@ function imageEditorPointerMove(event) {
 }
 
 function imageEditorPointerUp(event) {
+  if (imageEditorState.mode === "screen") {
+    imageEditorScreenPointerUp();
+    return;
+  }
   if (!imageEditorState.interaction) return;
   const interaction = imageEditorState.interaction;
   imageEditorState.interaction = null;
@@ -5689,14 +7584,21 @@ function restoreImageEditorHistory(index) {
   imageEditorState.selection = null;
   imageEditorState.gradient = null;
   renderImageEditorCanvas();
-  resetImageEditorZoom();
+  // 撤销只回放编辑内容：缩放与画面位置属于视图操作，保持用户当前的视野。
+  resetImageEditorZoom(imageEditorState.zoom, { preserveView: true });
   updateImageEditorControls();
   imageEditorStatus(`已恢复到历史步骤 ${index + 1} · 当前 ${imageEditorState.documentCanvas.width} × ${imageEditorState.documentCanvas.height}px`);
 }
 
 function exportImageEditorImage() {
   if (!imageEditorState.hasImage) return;
-  const exportCanvas = imageEditorState.documentCanvas;
+  let exportCanvas = imageEditorState.documentCanvas;
+  const screen = imageEditorScreen();
+  if (imageEditorState.mode === "screen" && screen.image && screen.corners.length === 4 && !screen.hideShot) {
+    clearTimeout(screen.fullTimer);
+    imageEditorScreenUpdatePreview("full");
+    exportCanvas = screen.fullCanvas;
+  }
   exportCanvas.toBlob(blob => {
     if (!blob) return;
     const baseName = imageEditorState.sourceName.replace(/\.[^.]+$/, "") || "image";
@@ -5823,6 +7725,28 @@ function imageEditorGestureChange(event) {
 }
 
 function imageEditorKeyDown(event) {
+  if (imageEditorState.mode === "screen") {
+    if (event.key === "Enter") {
+      const screen = imageEditorScreen();
+      if (screen.image && screen.corners.length === 4 && !screen.interaction) {
+        event.preventDefault();
+        imageEditorScreenApply();
+      }
+      return;
+    }
+    if (event.key === "Escape") {
+      event.preventDefault();
+      const screen = imageEditorScreen();
+      screen.activeCorner = -1;
+      imageEditorScreenHideMagnifier();
+      imageEditorScreenSyncOverlay();
+      return;
+    }
+    if (event.key.startsWith("Arrow")) {
+      imageEditorScreenHandleKey(event);
+      return;
+    }
+  }
   if (event.key.toLowerCase() === "v" && !event.metaKey && !event.ctrlKey && !event.altKey) {
     event.preventDefault();
     setImageEditorMode("view");
@@ -5959,7 +7883,7 @@ function updateAnnotationControls() {
     $("#annotationNumberSize").value = String(size);
     $("#annotationNumberSizeValue").textContent = `${size}px`;
   }
-  $("#annotationNumberEditor").hidden = annotationState.editingNumberId === null;
+  $("#annotationNumberEditor").hidden = true;
 }
 
 function updateBgAnnotationControls() {
@@ -6026,6 +7950,11 @@ function updateBgAnnotationControls() {
   if (displayType === "number") {
     const size = selected?.type === "number" ? annotationNumberSize(selected) : annotationState.numberSize;
     const color = selected?.type === "number" ? selected.color || "#ff5a52" : annotationState.numberColor;
+    if (document.activeElement !== $("#bgAnnotationNumberInput")) {
+      $("#bgAnnotationNumberInput").value = String(
+        selected?.type === "number" ? selected.number : annotationState.nextNumber
+      );
+    }
     $("#bgAnnotationNumberSize").value = String(size);
     $("#bgAnnotationNumberSizeValue").textContent = `${size}px`;
     $("#bgAnnotationNumberShadow").checked = selected?.type === "number"
@@ -6443,6 +8372,7 @@ function renderAnnotationCanvas(includeSelection = true) {
       []
     );
   }
+  syncAnnotationNumberInlineEditor();
 }
 
 function applyAnnotationZoom(zoom) {
@@ -6519,6 +8449,8 @@ function loadAnnotationImage(file) {
 
 function setAnnotationMode(mode) {
   if (!annotationState.image) return;
+  if (annotationState.editingNumberId !== null) closeAnnotationNumberInlineEditor(true);
+  const previousMode = annotationState.mode;
   if (annotationState.host === "bg" && mode !== "pen") hideBgAnnotationPenCursor();
   if (["number", "mask", "blur", "magnifier", "pen"].includes(mode)) {
     annotationState.selectedId = null;
@@ -6526,6 +8458,7 @@ function setAnnotationMode(mode) {
     annotationState.selectedPart = null;
     annotationState.editingNumberId = null;
   }
+  if (mode === "number" && previousMode !== "number") annotationState.nextNumber = 1;
   annotationState.mode = mode;
   annotationState.interaction = null;
   annotationState.snapGuides = emptySnapGuides();
@@ -6677,7 +8610,7 @@ function addAnnotationBlur() {
     y: (canvas.height - height) / 2,
     width,
     height,
-    strength: annotationState.blurStrength || 16,
+    strength: annotationState.blurStrength || 6,
     shadow: Boolean(annotationState.shadows.blur),
   };
   clampAnnotationItem(item);
@@ -6716,6 +8649,26 @@ function updateAnnotationNumberSize() {
   annotationControl("NumberSizeValue").textContent = `${size}px`;
   renderAnnotationCanvas();
   annotationStatusText(`全部序号大小 ${size}px · 共 ${annotationState.items.length} 个标注`);
+}
+
+function updateBgAnnotationNumberValue() {
+  const input = $("#bgAnnotationNumberInput");
+  const normalized = input.value.trim();
+  if (!/^\d+$/.test(normalized) || Number(normalized) < 1) return;
+  const number = Number(normalized);
+  const selectedItems = selectedAnnotationItems();
+  const selected = selectedItems.length === 1 && selectedItems[0].type === "number"
+    ? selectedItems[0]
+    : null;
+  if (selected) {
+    selected.number = number;
+    annotationState.nextNumber = Math.max(annotationState.nextNumber, number + 1);
+    renderAnnotationCanvas();
+    annotationStatusText(`序号已修改为 ${number}`);
+    return;
+  }
+  annotationState.nextNumber = number;
+  annotationStatusText(`下一个序号将从 ${number} 开始`);
 }
 
 function updateAnnotationBlurStrength() {
@@ -6944,7 +8897,8 @@ function magnifierPartAtPoint(item, point) {
 
 function annotationPointerDown(event) {
   if (!annotationState.image || event.button > 0) return;
-  annotationState.editingNumberId = null;
+  if (event.target.closest?.(".annotation-number-inline-editor")) return;
+  if (annotationState.editingNumberId !== null) closeAnnotationNumberInlineEditor(true);
   annotationState.snapGuides = emptySnapGuides();
   const canvas = annotationCanvas();
   const point = annotationPointerPosition(event);
@@ -6999,7 +8953,7 @@ function annotationPointerDown(event) {
       height: 0,
       ...(annotationState.mode === "blur"
         ? {
-            strength: annotationState.blurStrength || 16,
+            strength: annotationState.blurStrength || 6,
             shadow: Boolean(annotationState.shadows.blur),
           }
         : {
@@ -7530,6 +9484,114 @@ function annotationGestureChange(event) {
   );
 }
 
+function annotationStateForHost(host) {
+  return host === "bg" ? bgAnnotationState : nativeAnnotationState;
+}
+
+function ensureAnnotationNumberInlineEditor(host = annotationState.host) {
+  const stage = host === "bg" ? $("#blueBgStage") : $("#annotationStage");
+  let input = stage.querySelector(".annotation-number-inline-editor");
+  if (input) return input;
+  input = document.createElement("input");
+  input.type = "text";
+  input.inputMode = "numeric";
+  input.pattern = "[0-9]*";
+  input.className = "annotation-number-inline-editor";
+  input.setAttribute("aria-label", "编辑序号数字");
+  input.dataset.annotationHost = host;
+  input.hidden = true;
+  input.onpointerdown = event => event.stopPropagation();
+  input.ondblclick = event => event.stopPropagation();
+  input.oninput = () => {
+    const state = annotationStateForHost(input.dataset.annotationHost);
+    withAnnotationState(state, () => {
+      const item = state.items.find(candidate => candidate.id === state.editingNumberId);
+      const normalized = input.value.trim();
+      if (!item || !/^\d+$/.test(normalized) || Number(normalized) < 1) return;
+      item.number = Number(normalized);
+      state.nextNumber = Math.max(state.nextNumber, item.number + 1);
+      updateAnnotationControls();
+    });
+  };
+  input.onkeydown = event => {
+    const state = annotationStateForHost(input.dataset.annotationHost);
+    if (event.key === "Enter") {
+      event.preventDefault();
+      withAnnotationState(state, () => closeAnnotationNumberInlineEditor(true));
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      withAnnotationState(state, () => closeAnnotationNumberInlineEditor(false));
+    }
+  };
+  input.onblur = () => {
+    if (input.dataset.closing === "true") return;
+    const state = annotationStateForHost(input.dataset.annotationHost);
+    withAnnotationState(state, () => closeAnnotationNumberInlineEditor(true));
+  };
+  stage.appendChild(input);
+  return input;
+}
+
+function syncAnnotationNumberInlineEditor() {
+  const input = ensureAnnotationNumberInlineEditor();
+  const item = annotationState.items.find(candidate => candidate.id === annotationState.editingNumberId);
+  if (!item || item.type !== "number") {
+    input.hidden = true;
+    return;
+  }
+  const canvas = annotationCanvas();
+  const stage = annotationStage();
+  const canvasRect = canvas.getBoundingClientRect();
+  const stageRect = stage.getBoundingClientRect();
+  const scaleX = canvasRect.width / Math.max(1, canvas.width);
+  const scaleY = canvasRect.height / Math.max(1, canvas.height);
+  const size = annotationNumberSize(item);
+  const displayWidth = size * scaleX;
+  const displayHeight = size * scaleY;
+  input.hidden = false;
+  input.style.left = `${canvasRect.left - stageRect.left + stage.scrollLeft + (item.x - size / 2) * scaleX}px`;
+  input.style.top = `${canvasRect.top - stageRect.top + stage.scrollTop + (item.y - size / 2) * scaleY}px`;
+  input.style.width = `${displayWidth}px`;
+  input.style.height = `${displayHeight}px`;
+  input.style.fontSize = `${displayHeight * (String(item.number).length >= 3 ? 50 / 110 : 70 / 110)}px`;
+  input.style.setProperty("--number-color", item.color || "#ff5a52");
+}
+
+function openAnnotationNumberInlineEditor(item) {
+  annotationState.editingNumberId = item.id;
+  annotationState.editingNumberOriginal = item.number;
+  const input = ensureAnnotationNumberInlineEditor();
+  input.value = String(item.number);
+  updateAnnotationControls();
+  renderAnnotationCanvas();
+  syncAnnotationNumberInlineEditor();
+  input.focus();
+  input.select();
+}
+
+function closeAnnotationNumberInlineEditor(commit) {
+  const input = ensureAnnotationNumberInlineEditor();
+  const item = annotationState.items.find(candidate => candidate.id === annotationState.editingNumberId);
+  if (!item) {
+    input.hidden = true;
+    annotationState.editingNumberId = null;
+    annotationState.editingNumberOriginal = null;
+    return;
+  }
+  const normalized = input.value.trim();
+  const valid = /^\d+$/.test(normalized) && Number(normalized) >= 1;
+  const original = annotationState.editingNumberOriginal;
+  if (commit && valid) item.number = Number(normalized);
+  else item.number = original;
+  input.dataset.closing = "true";
+  input.hidden = true;
+  annotationState.editingNumberId = null;
+  annotationState.editingNumberOriginal = null;
+  delete input.dataset.closing;
+  finishAnnotationChange(commit && valid ? `序号已修改为 ${item.number}` : "已取消修改序号");
+  annotationStage().focus();
+}
+
 function annotationDoubleClick(event) {
   if (!annotationState.image) return;
   const point = annotationPointerPosition(event);
@@ -7541,12 +9603,7 @@ function annotationDoubleClick(event) {
   annotationState.selectedId = item.id;
   annotationState.selectedIds = [];
   annotationState.selectedPart = null;
-  annotationState.editingNumberId = item.id;
-  $("#annotationNumberInput").value = String(item.number);
-  updateAnnotationControls();
-  renderAnnotationCanvas();
-  $("#annotationNumberInput").focus();
-  $("#annotationNumberInput").select();
+  openAnnotationNumberInlineEditor(item);
 }
 
 function closeAnnotationNumberEditor() {
@@ -7561,11 +9618,12 @@ function confirmAnnotationNumberEdit() {
     closeAnnotationNumberEditor();
     return;
   }
-  const normalized = $("#annotationNumberInput").value.trim();
+  const input = annotationControl("NumberInput");
+  const normalized = input.value.trim();
   if (!/^\d+$/.test(normalized) || Number(normalized) < 1) {
     annotationStatusText("序号修改失败：请输入大于 0 的整数。");
-    $("#annotationNumberInput").focus();
-    $("#annotationNumberInput").select();
+    input.focus();
+    input.select();
     return;
   }
   item.number = Number(normalized);
@@ -8629,7 +10687,7 @@ function runActiveImageModuleHistory(redo) {
   else if (moduleId === "annotation") {
     restoreAnnotationHistory(annotationState.historyIndex + (redo ? 1 : -1));
   } else if (moduleId === "imageEditor") {
-    restoreImageEditorHistory(imageEditorState.historyIndex + (redo ? 1 : -1));
+    runImageEditorHistory(redo);
   }
 }
 
@@ -8765,7 +10823,7 @@ function selectAllInActiveImageTool() {
       y: 0,
       width: canvas.width,
       height: canvas.height,
-      ...(annotationState.mode === "blur" ? { strength: 16 } : {}),
+      ...(annotationState.mode === "blur" ? { strength: 6 } : {}),
     };
     annotationState.items.push(item);
     annotationState.selectedId = item.id;
@@ -8882,6 +10940,7 @@ function imageModuleGlobalKeyDown(event) {
       s: () => setImageEditorMode("split"),
       b: () => setImageEditorMode("blend"),
       w: suggestImageEditorWindow,
+      h: () => setImageEditorMode(imageEditorState.mode === "screen" ? "view" : "screen"),
     };
     const action = imageEditorShortcuts[plainKey];
     if (action) {
@@ -9059,6 +11118,22 @@ function bind() {
     const tabButton = event.target.closest("[data-bg-tab-id]");
     if (tabButton) closeBgTab(tabButton.dataset.bgTabId);
   };
+  $("#imageEditorAddTabButton").onclick = () => createImageEditorTab();
+  $("#imageEditorTabs").onclick = event => {
+    const closeButton = event.target.closest("[data-image-editor-tab-close]");
+    if (closeButton) {
+      event.stopPropagation();
+      closeImageEditorTab(closeButton.dataset.imageEditorTabClose);
+      return;
+    }
+    const tabButton = event.target.closest("[data-image-editor-tab-id]");
+    if (tabButton) switchImageEditorTab(tabButton.dataset.imageEditorTabId);
+  };
+  $("#imageEditorTabs").onauxclick = event => {
+    if (event.button !== 1) return;
+    const tabButton = event.target.closest("[data-image-editor-tab-id]");
+    if (tabButton) closeImageEditorTab(tabButton.dataset.imageEditorTabId);
+  };
   $("#bgViewMode").onclick = openBgBackgroundDialog;
   $("#bgBackgroundButton").onclick = openBgImageStylePanel;
   $("#bgBackgroundFile").onchange = () => {
@@ -9083,7 +11158,7 @@ function bind() {
       else if (addCustom.dataset.bgAddCustom === "aspect") addCustomBgAspect();
       return;
     }
-    const customTile = event.target.closest("[data-bg-custom]");
+    const customTile = event.target.closest('[data-bg-custom="true"]');
     if (customTile) {
       $("#bgBackgroundFile").click();
       return;
@@ -9273,6 +11348,12 @@ function bind() {
     updateBlueBgLayerRadius();
   };
   $("#bgEffectRoundRadius").onchange = pushBgHistory;
+  $("#bgEffectCorners").onclick = event => {
+    const button = event.target.closest("[data-bg-corner]");
+    if (!button) return;
+    toggleBgCorner(button.dataset.bgCorner);
+    pushBgHistory();
+  };
   $("#bgCanvasZoom").oninput = () => {
     const stage = $("#blueBgStage");
     const rect = stage.getBoundingClientRect();
@@ -9315,6 +11396,11 @@ function bind() {
     withAnnotationState(bgAnnotationState, updateAnnotationNumberSize);
     pushBgHistory();
   };
+  $("#bgAnnotationNumberInput").oninput = () => withAnnotationState(bgAnnotationState, updateBgAnnotationNumberValue);
+  $("#bgAnnotationNumberInput").onchange = () => withAnnotationState(bgAnnotationState, () => {
+    updateBgAnnotationNumberValue();
+    pushAnnotationHistory();
+  });
   $("#bgAnnotationInspector").onclick = event => {
     const custom = event.target.closest("[data-annotation-custom-select]");
     if (custom) {
@@ -9354,6 +11440,7 @@ function bind() {
   $("#bgAnnotationMaskRoundRadius").oninput = updateBgAnnotationMaskRadius;
   $("#bgAnnotationMaskRoundRadius").onchange = pushBgHistory;
   $("#blueBgStage").oncontextmenu = blueBgContextMenu;
+  $("#blueBgStage").ondblclick = event => withAnnotationState(bgAnnotationState, () => annotationDoubleClick(event));
   $("#blueBgStage").onpointerdown = blueBgStagePointerDown;
   $("#blueBgStage").onpointermove = blueBgStagePointerMove;
   $("#blueBgStage").onpointerup = blueBgStagePointerUp;
@@ -9415,26 +11502,91 @@ function bind() {
     $(selector).onchange = renderImageEditorCanvas;
   });
   $("#imageEditorApplyComposite").onclick = applyImageEditorComposite;
+  $("#imageEditorScreenMode").onclick = () => setImageEditorMode("screen");
+  $("#imageEditorScreenFileButton").onclick = () => $("#imageEditorScreenFile").click();
+  $("#imageEditorScreenFile").onchange = event => {
+    imageEditorScreenLoadFile(event.target.files[0]).catch(err => imageEditorStatus(err.message));
+    event.target.value = "";
+  };
+  const screenParamInputs = [
+    ["#imageEditorScreenLight", "light", value => value / 100],
+    ["#imageEditorScreenFeather", "feather", Number],
+    ["#imageEditorScreenRadius", "radius", Number],
+    ["#imageEditorScreenOpacity", "opacity", value => value / 100],
+  ];
+  screenParamInputs.forEach(([selector, key, convert]) => {
+    const input = $(selector);
+    input.oninput = () => {
+      imageEditorScreen().params[key] = convert(Number(input.value));
+      imageEditorScreenSyncParamLabels();
+      // 光照/羽化这类参数只有精确合成才看得出来，网格预览不含它们。
+      imageEditorScreenSchedule("full");
+    };
+    input.onchange = () => {
+      imageEditorScreen().params[key] = convert(Number(input.value));
+      imageEditorScreenSyncParamLabels();
+      imageEditorScreenSchedule("full");
+      pushImageEditorScreenHistory();
+    };
+  });
+  $("#imageEditorScreenFit").onchange = event => {
+    imageEditorScreen().params.fit = event.target.value;
+    imageEditorScreenSchedule("full");
+    pushImageEditorScreenHistory();
+  };
+  $("#imageEditorScreenNotch").onchange = event => {
+    imageEditorScreen().params.notch = event.target.checked;
+    imageEditorScreenSchedule("full");
+    pushImageEditorScreenHistory();
+  };
+  $("#imageEditorScreenSnap").onchange = event => {
+    imageEditorScreen().autoSnap = event.target.checked;
+  };
+  $("#imageEditorScreenHideOverlay").onchange = event => {
+    imageEditorScreen().hideOverlay = event.target.checked;
+    imageEditorScreenSyncOverlay();
+  };
+  $("#imageEditorScreenHideShot").onchange = event => {
+    imageEditorScreen().hideShot = event.target.checked;
+    imageEditorScreenSchedule("full");
+    imageEditorStatus(event.target.checked ? "已隐藏贴图，现在看到的是原图。" : "已恢复显示贴图。");
+  };
+  $("#imageEditorScreenReset").onclick = imageEditorScreenResetCorners;
+  $("#imageEditorScreenRefine").onclick = () => {
+    const moved = imageEditorScreenRefine();
+    if (moved) pushImageEditorScreenHistory();
+    imageEditorStatus(moved ? `已吸附精修 ${moved} 个角点。` : "没有找到足够明确的边缘，未做调整。");
+  };
+  $("#imageEditorConfirmScreen").onclick = imageEditorScreenApply;
+  $("#imageEditorCancelScreen").onclick = imageEditorScreenCancel;
+  $("#imageEditorScreenOverlayActions").onpointerdown = event => event.stopPropagation();
   $("#imageEditorApplySelection").onclick = applyImageEditorSelection;
   $("#imageEditorCancelSelection").onclick = cancelImageEditorSelection;
   $("#imageEditorApplyGradient").onclick = applyImageEditorGradient;
   $("#imageEditorCancelGradient").onclick = cancelImageEditorGradient;
-  $("#imageEditorUndo").onclick = () => restoreImageEditorHistory(imageEditorState.historyIndex - 1);
-  $("#imageEditorRedo").onclick = () => restoreImageEditorHistory(imageEditorState.historyIndex + 1);
+  $("#imageEditorUndo").onclick = () => runImageEditorHistory(false);
+  $("#imageEditorRedo").onclick = () => runImageEditorHistory(true);
   $("#imageEditorExport").onclick = exportImageEditorImage;
   $("#imageEditorStage").onpointerdown = imageEditorPointerDown;
   $("#imageEditorStage").onpointermove = imageEditorPointerMove;
   $("#imageEditorStage").onpointerup = imageEditorPointerUp;
   $("#imageEditorStage").onpointercancel = imageEditorPointerUp;
-  $("#imageEditorStage").onscroll = syncImageEditorOverlays;
-  $("#imageEditorStage").onpointerleave = hideImageEditorInpaintCursor;
+  $("#imageEditorStage").onscroll = () => {
+    syncImageEditorOverlays();
+    imageEditorScreenRefreshMagnifier();
+  };
+  $("#imageEditorStage").onpointerleave = () => {
+    hideImageEditorInpaintCursor();
+    imageEditorScreenHideMagnifier();
+  };
   $("#imageEditorStage").addEventListener("wheel", imageEditorWheel, { passive: false });
   $("#imageEditorStage").addEventListener("gesturestart", imageEditorGestureStart, { passive: false });
   $("#imageEditorStage").addEventListener("gesturechange", imageEditorGestureChange, { passive: false });
   document.addEventListener("keydown", event => {
     if (!$("#imageEditor").classList.contains("active")) return;
     const target = event.target;
-    if (target?.matches?.('textarea, select, [contenteditable="true"], input:not([type="file"]):not([type="button"]):not([type="checkbox"])')) return;
+    const editing = target?.matches?.('textarea, select, [contenteditable="true"], input:not([type="file"]):not([type="button"]):not([type="checkbox"])');
+    if (editing && !(imageEditorState.mode === "screen" && event.key === "Enter")) return;
     imageEditorKeyDown(event);
   });
   document.addEventListener("pointerdown", event => {
@@ -9494,7 +11646,12 @@ function bind() {
   $("#annotationStage").onpointermove = annotationPointerMove;
   $("#annotationStage").onpointerup = annotationPointerUp;
   $("#annotationStage").onpointercancel = annotationPointerUp;
-  $("#annotationCanvas").ondblclick = annotationDoubleClick;
+  // 双击要绑在 stage 上：pointerdown 里 stage 会 setPointerCapture，
+  // 之后的 dblclick 目标被重定向为 stage，绑在 canvas 上收不到。
+  $("#annotationStage").ondblclick = event => withAnnotationState(
+    nativeAnnotationState,
+    () => annotationDoubleClick(event)
+  );
   $("#annotationStage").addEventListener("wheel", annotationWheel, { passive: false });
   $("#annotationStage").addEventListener("gesturestart", annotationGestureStart, { passive: false });
   $("#annotationStage").addEventListener("gesturechange", annotationGestureChange, { passive: false });
@@ -9514,6 +11671,7 @@ function bind() {
   });
   window.addEventListener("blur", () => showImageModuleShortcutHints(false));
   window.addEventListener("resize", syncBgMaterialColumnWidth);
+  window.addEventListener("resize", scheduleImageEditorInspectorAlign);
   $("#makeButton").onclick = () => makeButtonImage().catch(err => alert(err.message));
   $("#searchProducts").onclick = () => searchProductsAndGenerate().catch(err => $("#productInfoResult").textContent = err.message);
   $("#productKeywords").onkeydown = event => {
@@ -9586,4 +11744,5 @@ initializeBgAnnotationCustomColors();
 openBgBackgroundDialog();
 toggleBlueBgMode();
 createBgTab();
+createImageEditorTab();
 showTab("bg");
