@@ -613,6 +613,8 @@ body.is-dragging-bg-material * {
   display: none;
 }
 .bg-canvas-tab-bar {
+  /* 标签宽度固定为 120px（原最大宽度 180px 的 2/3），不随内容与页面宽度变化。 */
+  --bg-canvas-tab-width: 120px;
   display: flex;
   align-items: center;
   gap: 3px;
@@ -635,18 +637,33 @@ body.is-dragging-bg-material * {
   min-width: 0;
   overflow-x: auto;
   overscroll-behavior-x: contain;
+  scrollbar-width: none;
+}
+.bg-canvas-tabs::-webkit-scrollbar { display: none; }
+/* 标签总宽超出可用区域时，两端用渐隐提示还能继续左右滑动。 */
+.bg-canvas-tabs.has-scroll-left {
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 18px);
+  mask-image: linear-gradient(to right, transparent, #000 18px);
+}
+.bg-canvas-tabs.has-scroll-right {
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 18px), transparent);
+  mask-image: linear-gradient(to right, #000 calc(100% - 18px), transparent);
+}
+.bg-canvas-tabs.has-scroll-left.has-scroll-right {
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 18px, #000 calc(100% - 18px), transparent);
+  mask-image: linear-gradient(to right, transparent, #000 18px, #000 calc(100% - 18px), transparent);
 }
 /* 画布标签页与顶部工具切换共用“灰底容器＋白色当前项”的层级表达。 */
 .bg-canvas-tab {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   position: relative;
   isolation: isolate;
-  gap: 6px;
-  flex: 0 1 auto;
+  /* 宽度固定：既不随标题长短变化，也不被标签栏压缩，溢出交给标签栏横向滑动。 */
+  flex: 0 0 var(--bg-canvas-tab-width);
+  width: var(--bg-canvas-tab-width);
   box-sizing: border-box;
-  min-width: 0;
-  max-width: 180px;
   min-height: 32px;
   padding: 4px 9px;
   border: 1px solid transparent;
@@ -657,6 +674,9 @@ body.is-dragging-bg-material * {
   font-weight: 600;
   cursor: pointer;
   white-space: nowrap;
+  touch-action: pan-x;
+  user-select: none;
+  transition: transform .18s cubic-bezier(.2, .85, .28, 1);
 }
 .bg-canvas-tab:hover {
   color: #475467;
@@ -694,36 +714,43 @@ body.is-dragging-bg-material * {
   display: none;
 }
 .bg-canvas-tab-label {
+  flex: 0 1 auto;
+  min-width: 0;
   overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
+  text-align: center;
 }
-.bg-canvas-tab-close {
-  display: grid;
-  place-items: center;
-  flex: 0 0 auto;
-  width: 18px;
-  height: 18px;
-  margin-left: 4px;
-  padding: 0;
-  border: 0;
-  border-radius: 50%;
-  color: inherit;
-  background: transparent;
-  font-size: 13px;
-  line-height: 1;
-  cursor: pointer;
+/* 标题超长：改为左对齐，超出部分向右截断并以渐变淡出。 */
+.bg-canvas-tab.is-overflow {
+  justify-content: flex-start;
+}
+.bg-canvas-tab.is-overflow .bg-canvas-tab-label {
+  text-align: left;
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 16px), transparent);
+  mask-image: linear-gradient(to right, #000 calc(100% - 16px), transparent);
+}
+/* 拖拽排序：原位标签留空占位，拖影跟随指针，其余标签平移让位。 */
+.bg-canvas-tab.is-drag-placeholder {
   opacity: 0;
 }
-.bg-canvas-tab:hover .bg-canvas-tab-close,
-.bg-canvas-tab:focus-within .bg-canvas-tab-close,
-.bg-canvas-tab-close:focus-visible {
-  opacity: .8;
+.bg-canvas-tab.is-shifting {
+  pointer-events: none;
 }
-.bg-canvas-tab-close:hover {
-  color: #475467;
-  background: var(--control-hover);
-  opacity: 1 !important;
+.bg-canvas-tab-ghost {
+  position: fixed;
+  z-index: 140;
+  margin: 0;
+  pointer-events: none;
+  cursor: grabbing;
+  box-shadow: 0 8px 18px rgba(16, 24, 40, .22);
+  transition: none !important;
+}
+body.canvas-tab-dragging,
+body.canvas-tab-dragging * {
+  cursor: grabbing !important;
+}
+body.canvas-tab-dragging .bg-canvas-tab:not(.bg-canvas-tab-ghost):hover::after {
+  display: none;
 }
 .bg-canvas-tab-add {
   position: relative;

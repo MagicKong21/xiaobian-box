@@ -3,11 +3,11 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="小编工具箱是一款在浏览器本地运行的图片美化、标注与高级编辑工具。">
+  <meta name="description" content="小编盒子是一款在浏览器本地运行的图片美化、标注与高级编辑工具。">
   <meta name="theme-color" content="#ffffff">
-  <title>小编工具箱</title>
-  <link rel="icon" type="image/png" href="./assets/toolbox-icon.png">
-  <link rel="stylesheet" href="./styles.css?v=20260918-screen-workflow">
+  <title>小编盒子</title>
+  <link rel="icon" type="image/png" href="./assets/xiaobian-box-dragon-logo.png">
+  <link rel="stylesheet" href="./styles.css?v=20260919-canvas-tab-bar">
 </head>
 <body>
   <nav class="tabs" aria-label="工具导航">
@@ -758,8 +758,12 @@
     </section>
   </main>
 
-  <div class="tool-version"><img src="./assets/toolbox-icon.png" alt="" aria-hidden="true">小编工具箱</div>
+  <div class="tool-version"><img src="./assets/xiaobian-box-dragon-logo.png" alt="" aria-hidden="true">小编盒子</div>
 
-  <script src="./app.js?v=20260918-screen-workflow"></script>
+  <div id="canvasTabContextMenu" class="blue-bg-context-menu" role="menu" hidden>
+    <button id="canvasTabClose" type="button" role="menuitem">关闭标签页</button>
+  </div>
+
+  <script src="./app.js?v=20260919-canvas-tab-bar"></script>
 </body>
 </html>

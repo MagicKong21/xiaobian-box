@@ -163,6 +163,7 @@ function createBgTab({ activate = true } = {}) {
   bgTabList.push(tab);
   if (activate) switchBgTab(tab.id);
   else renderBgTabs();
+  revealCanvasTabEnd($("#bgCanvasTabs"));
   return tab;
 }
 
@@ -184,11 +185,11 @@ function closeBgTab(tabId) {
   renderBgTabs();
 }
 
-function switchBgTab(tabId) {
+function switchBgTab(tabId, { renderTabs = true } = {}) {
   const target = bgTabList.find(tab => tab.id === tabId);
   if (!target) return;
   if (target.id === activeBgTabId) {
-    renderBgTabs();
+    if (renderTabs) renderBgTabs();
     return;
   }
   const previous = currentBgTab();
@@ -206,7 +207,7 @@ function switchBgTab(tabId) {
   bgHistory = target.history;
   bgHistoryIndex = target.historyIndex;
   annotationState = bgAnnotationState;
-  renderBgTabs();
+  if (renderTabs) renderBgTabs();
   $("#blueBgEditor").hidden = false;
   $("#bgPreview").hidden = true;
   ensureUnifiedBgBackground(null, target.canvas, { preserveCanvasSize: true })
@@ -234,33 +235,312 @@ function switchBgTab(tabId) {
     .catch(err => blueBgStatus(err.message));
 }
 
+// 拖拽排序：只调整标签顺序，激活标签跟着自己的 id 走，不改变当前画布。
+function moveBgTab(from, to) {
+  if (from === to || from < 0 || to < 0 || from >= bgTabList.length || to >= bgTabList.length) return;
+  const [tab] = bgTabList.splice(from, 1);
+  bgTabList.splice(to, 0, tab);
+  renderBgTabs();
+}
+
+// —— 画布标签栏共用交互 ——
+// 「美化 / 标注」与「高级编辑」共用同一套标签行为：宽度固定、放不下时横向滑动、
+// 可拖拽排序、右键菜单关闭。关闭按钮已移除，关闭入口统一走右键菜单。
+let canvasTabDragState = null;
+let suppressCanvasTabClick = false;
+let canvasTabContextTarget = null;
+
+// 标签宽度固定，标题放不下时改为左对齐并让右端渐隐。
+function syncCanvasTabBar(wrap) {
+  if (!wrap || !wrap.clientWidth) return;
+  wrap.querySelectorAll(".bg-canvas-tab").forEach(tabButton => {
+    const label = tabButton.querySelector(".bg-canvas-tab-label");
+    const overflow = Boolean(label) && label.scrollWidth > label.clientWidth + 1;
+    tabButton.classList.toggle("is-overflow", overflow);
+  });
+  updateCanvasTabScrollHint(wrap);
+}
+
+// 还能往两边滑就给对应方向加渐隐提示。
+function updateCanvasTabScrollHint(wrap) {
+  if (!wrap) return;
+  const maxScroll = Math.max(0, wrap.scrollWidth - wrap.clientWidth);
+  const current = Math.min(Math.max(wrap.scrollLeft, 0), maxScroll);
+  wrap.classList.toggle("has-scroll-left", maxScroll > 1 && current > 1);
+  wrap.classList.toggle("has-scroll-right", maxScroll > 1 && current < maxScroll - 1);
+}
+
+function buildCanvasTabElements(wrap, items, activeId, dataKey) {
+  // 标签重建前先记住横向位置，避免切换/重排后视图跳回最左。
+  const previousScrollLeft = wrap.scrollLeft;
+  wrap.innerHTML = "";
+  items.forEach(item => {
+    const tabButton = document.createElement("div");
+    tabButton.className = `bg-canvas-tab${item.id === activeId ? " active" : ""}`;
+    tabButton.dataset[dataKey] = item.id;
+    tabButton.setAttribute("role", "tab");
+    tabButton.setAttribute("aria-selected", item.id === activeId ? "true" : "false");
+    tabButton.setAttribute("aria-label", item.title);
+    tabButton.title = item.title;
+    const label = document.createElement("span");
+    label.className = "bg-canvas-tab-label";
+    label.textContent = item.title;
+    tabButton.appendChild(label);
+    wrap.appendChild(tabButton);
+  });
+  wrap.scrollLeft = Math.min(previousScrollLeft, Math.max(0, wrap.scrollWidth - wrap.clientWidth));
+  syncCanvasTabBar(wrap);
+}
+
+// 新建标签后保证新标签落在视野内。
+function revealCanvasTabEnd(wrap) {
+  if (!wrap) return;
+  requestAnimationFrame(() => {
+    wrap.scrollLeft = Math.max(0, wrap.scrollWidth - wrap.clientWidth);
+  });
+}
+
+function showCanvasTabContextMenu(config, tabButton, clientX, clientY) {
+  const menu = $("#canvasTabContextMenu");
+  if (!menu) return;
+  hideCanvasTabContextMenu();
+  canvasTabContextTarget = { config, tabId: tabButton.dataset[config.dataKey] };
+  menu.style.left = `${Math.min(clientX, window.innerWidth - 160)}px`;
+  menu.style.top = `${Math.min(clientY, window.innerHeight - 52)}px`;
+  menu.hidden = false;
+}
+
+function hideCanvasTabContextMenu() {
+  const menu = $("#canvasTabContextMenu");
+  if (menu) menu.hidden = true;
+  canvasTabContextTarget = null;
+}
+
+function closeCanvasTabFromMenu() {
+  const target = canvasTabContextTarget;
+  hideCanvasTabContextMenu();
+  if (target) target.config.onClose(target.tabId);
+}
+
+// 拖拽排序：原位标签留空占位，克隆一份拖影跟着指针，其余标签平移让位。
+function beginCanvasTabDrag(event, config) {
+  if (event.button !== 0 || canvasTabDragState) return;
+  const wrap = config.wrap;
+  const tabButton = event.target.closest(".bg-canvas-tab");
+  if (!tabButton || !wrap.contains(tabButton)) return;
+  const originIdx = Array.from(wrap.querySelectorAll(".bg-canvas-tab")).indexOf(tabButton);
+  if (originIdx < 0) return;
+  hideCanvasTabContextMenu();
+  const rect = tabButton.getBoundingClientRect();
+  const drag = {
+    config, wrap, tab: tabButton, originIdx, rect, ghost: null, rafId: 0,
+    startX: event.clientX, startY: event.clientY, lastX: event.clientX,
+    moved: false, targetIdx: originIdx,
+  };
+  const onMove = ev => {
+    if (!drag.moved) {
+      if (Math.abs(ev.clientX - drag.startX) <= 5 && Math.abs(ev.clientY - drag.startY) <= 5) return;
+      startCanvasTabDragPreview(drag);
+    }
+    drag.lastX = ev.clientX;
+    positionCanvasTabGhost(drag, ev.clientX);
+    drag.targetIdx = canvasTabDropIndex(drag);
+    renderCanvasTabDragPreview(drag);
+  };
+  const detach = () => {
+    window.removeEventListener("pointermove", onMove);
+    window.removeEventListener("pointerup", onUp);
+    window.removeEventListener("pointercancel", onCancel);
+    if (drag.rafId) cancelAnimationFrame(drag.rafId);
+    drag.rafId = 0;
+    if (canvasTabDragState === drag) canvasTabDragState = null;
+  };
+  const onUp = () => {
+    detach();
+    if (!drag.moved) return;
+    // 拖拽结束后紧跟着的那次 click 是「松手」而不是「点击」，抑制掉。
+    suppressCanvasTabClick = true;
+    setTimeout(() => { suppressCanvasTabClick = false; }, 0);
+    finishCanvasTabDragPreview(drag);
+    if (drag.targetIdx !== drag.originIdx) config.onMove(drag.originIdx, drag.targetIdx);
+  };
+  const onCancel = () => {
+    detach();
+    if (drag.moved) finishCanvasTabDragPreview(drag);
+  };
+  canvasTabDragState = drag;
+  window.addEventListener("pointermove", onMove);
+  window.addEventListener("pointerup", onUp);
+  window.addEventListener("pointercancel", onCancel);
+}
+
+function startCanvasTabDragPreview(drag) {
+  drag.moved = true;
+  const tabs = Array.from(drag.wrap.querySelectorAll(".bg-canvas-tab"));
+  // 拖拽即选中：先切到这张画布，再把 active 标记挪到被拖的标签上。
+  // 切换时刻意不重渲染标签栏（renderTabs: false）——重建 DOM 会销毁被拖的节点，
+  // 拖影会闪跳、让位状态也会丢，所以 active 类在这里手动同步。
+  if (!drag.tab.classList.contains("active")) {
+    drag.config.onSelect(drag.tab.dataset[drag.config.dataKey], { renderTabs: false });
+    tabs.forEach(tab => tab.classList.toggle("active", tab === drag.tab));
+  }
+  drag.tab.classList.add("is-drag-placeholder");
+  document.body.classList.add("canvas-tab-dragging");
+  // 记成普通对象：拖到两端自动滚动时，这些坐标要跟着滚动量平移。
+  drag.positions = tabs.map(tab => {
+    const box = tab.getBoundingClientRect();
+    return { left: box.left, top: box.top, width: box.width, height: box.height };
+  });
+  // 让位步长取相邻标签的中心距，固定宽度下即「标签宽 + 间距」。
+  drag.stride = drag.positions.length > 1
+    ? (drag.positions[1].left + drag.positions[1].width / 2) - (drag.positions[0].left + drag.positions[0].width / 2)
+    : drag.rect.width;
+  const ghost = drag.tab.cloneNode(true);
+  ghost.className = `${drag.tab.className} bg-canvas-tab-ghost`;
+  ghost.classList.remove("is-drag-placeholder");
+  ghost.removeAttribute("style");
+  ghost.style.width = `${drag.rect.width}px`;
+  ghost.style.height = `${drag.rect.height}px`;
+  ghost.style.left = `${drag.rect.left}px`;
+  ghost.style.top = `${drag.rect.top}px`;
+  document.body.appendChild(ghost);
+  drag.ghost = ghost;
+  drag.rafId = requestAnimationFrame(() => canvasTabDragAutoScroll(drag));
+}
+
+// 拖影中心对准指针，并被钳制在标签栏范围内。
+function positionCanvasTabGhost(drag, clientX) {
+  const barRect = drag.wrap.getBoundingClientRect();
+  const maxLeft = Math.max(barRect.left, barRect.right - drag.rect.width);
+  const safeLeft = Math.max(barRect.left, Math.min(clientX - drag.rect.width / 2, maxLeft));
+  drag.ghost.style.left = `${safeLeft}px`;
+  drag.ghost.style.top = `${drag.rect.top}px`;
+}
+
+// 拖着指针停在标签栏两端时持续横向滚动，让滚出视野的标签也能拖到。
+function canvasTabDragAutoScroll(drag) {
+  if (!drag.moved || !drag.ghost) return;
+  const wrap = drag.wrap;
+  const barRect = wrap.getBoundingClientRect();
+  const maxScroll = Math.max(0, wrap.scrollWidth - wrap.clientWidth);
+  const edgeZone = 24;
+  const atLeft = drag.lastX < barRect.left + edgeZone;
+  const atRight = drag.lastX > barRect.right - edgeZone;
+  if (maxScroll > 0 && (atLeft || atRight)) {
+    const next = Math.min(Math.max(wrap.scrollLeft + (atLeft ? -10 : 10), 0), maxScroll);
+    const applied = next - wrap.scrollLeft;
+    if (applied) {
+      wrap.scrollLeft = next;
+      drag.positions.forEach(pos => { pos.left -= applied; });
+      drag.rect.left -= applied;
+      positionCanvasTabGhost(drag, drag.lastX);
+      drag.targetIdx = canvasTabDropIndex(drag);
+      renderCanvasTabDragPreview(drag);
+    }
+  }
+  drag.rafId = requestAnimationFrame(() => canvasTabDragAutoScroll(drag));
+}
+
+// 拖影中心越过哪个标签的中线，就落在哪个标签的位置上。
+function canvasTabDropIndex(drag) {
+  const ghostRect = drag.ghost.getBoundingClientRect();
+  const center = ghostRect.left + ghostRect.width / 2;
+  const origin = drag.originIdx;
+  const middleOf = i => drag.positions[i].left + drag.positions[i].width / 2;
+  let target = origin;
+  if (center < middleOf(origin)) {
+    for (let i = origin - 1; i >= 0; i--) {
+      if (center <= middleOf(i)) target = i;
+    }
+  } else if (center > middleOf(origin)) {
+    for (let i = origin + 1; i < drag.positions.length; i++) {
+      if (center >= middleOf(i)) target = i;
+    }
+  }
+  return target;
+}
+
+function renderCanvasTabDragPreview(drag) {
+  const shift = drag.stride;
+  drag.wrap.querySelectorAll(".bg-canvas-tab").forEach((tab, i) => {
+    if (tab === drag.tab) return;
+    let x = 0;
+    if (drag.targetIdx < drag.originIdx && i >= drag.targetIdx && i < drag.originIdx) x = shift;
+    if (drag.targetIdx > drag.originIdx && i > drag.originIdx && i <= drag.targetIdx) x = -shift;
+    tab.style.transform = x ? `translateX(${x}px)` : "";
+    tab.classList.toggle("is-shifting", Boolean(x));
+  });
+}
+
+function finishCanvasTabDragPreview(drag) {
+  drag.ghost?.remove();
+  drag.ghost = null;
+  document.body.classList.remove("canvas-tab-dragging");
+  drag.wrap.querySelectorAll(".bg-canvas-tab").forEach(tab => {
+    tab.style.transform = "";
+    tab.classList.remove("is-shifting", "is-drag-placeholder");
+  });
+}
+
+// 滚轮纵向滚动转成标签栏横向滑动；原生横向滚动仍交给浏览器。
+function initCanvasTabWheelScroll(wrap) {
+  wrap.addEventListener("wheel", event => {
+    if (wrap.scrollWidth <= wrap.clientWidth) return;
+    if (Math.abs(event.deltaX) > Math.abs(event.deltaY)) return;
+    event.preventDefault();
+    const maxScroll = Math.max(0, wrap.scrollWidth - wrap.clientWidth);
+    wrap.scrollLeft = Math.min(Math.max(wrap.scrollLeft + event.deltaY, 0), maxScroll);
+  }, { passive: false });
+}
+
+// 标签栏宽度随窗口或侧栏变化时重新判定溢出与滑动提示。
+const canvasTabBarResizeObserver = typeof ResizeObserver === "undefined"
+  ? null
+  : new ResizeObserver(entries => {
+    entries.forEach(entry => {
+      if (!entry.target.clientWidth) return;
+      requestAnimationFrame(() => syncCanvasTabBar(entry.target));
+    });
+  });
+
+function setupCanvasTabBar(config) {
+  const { wrap } = config;
+  if (!wrap || wrap.dataset.canvasTabBarReady) return;
+  wrap.dataset.canvasTabBarReady = "true";
+  wrap.addEventListener("click", event => {
+    if (suppressCanvasTabClick) return;
+    const tabButton = event.target.closest(".bg-canvas-tab");
+    if (tabButton) config.onSelect(tabButton.dataset[config.dataKey]);
+  });
+  // 中键点标签仍是直接关闭，保留原来的快捷操作。
+  wrap.addEventListener("auxclick", event => {
+    if (event.button !== 1) return;
+    const tabButton = event.target.closest(".bg-canvas-tab");
+    if (tabButton) config.onClose(tabButton.dataset[config.dataKey]);
+  });
+  wrap.addEventListener("contextmenu", event => {
+    const tabButton = event.target.closest(".bg-canvas-tab");
+    if (!tabButton) return;
+    event.preventDefault();
+    showCanvasTabContextMenu(config, tabButton, event.clientX, event.clientY);
+  });
+  wrap.addEventListener("pointerdown", event => beginCanvasTabDrag(event, config));
+  wrap.addEventListener("scroll", () => updateCanvasTabScrollHint(wrap), { passive: true });
+  initCanvasTabWheelScroll(wrap);
+  canvasTabBarResizeObserver?.observe(wrap);
+}
+
 function renderBgTabs() {
   const wrap = $("#bgCanvasTabs");
   const bar = $("#bgCanvasTabBar");
   if (!wrap || !bar) return;
   bar.hidden = false;
-  wrap.innerHTML = "";
-  bgTabList.forEach(tab => {
-    const tabButton = document.createElement("div");
-    tabButton.className = `bg-canvas-tab${tab.id === activeBgTabId ? " active" : ""}`;
-    tabButton.dataset.bgTabId = tab.id;
-    tabButton.setAttribute("role", "tab");
-    tabButton.setAttribute("aria-selected", tab.id === activeBgTabId ? "true" : "false");
-    tabButton.setAttribute("aria-label", bgTabTitle(tab));
-    tabButton.title = bgTabTitle(tab);
-    const label = document.createElement("span");
-    label.className = "bg-canvas-tab-label";
-    label.textContent = bgTabTitle(tab);
-    tabButton.appendChild(label);
-    const closeButton = document.createElement("button");
-    closeButton.type = "button";
-    closeButton.className = "bg-canvas-tab-close";
-    closeButton.dataset.bgTabClose = tab.id;
-    closeButton.setAttribute("aria-label", `关闭 ${bgTabTitle(tab)}`);
-    closeButton.textContent = "×";
-    tabButton.appendChild(closeButton);
-    wrap.appendChild(tabButton);
-  });
+  buildCanvasTabElements(
+    wrap,
+    bgTabList.map(tab => ({ id: tab.id, title: bgTabTitle(tab) })),
+    activeBgTabId,
+    "bgTabId"
+  );
 }
 
 function syncActiveBgTabTitle() {
@@ -322,6 +602,7 @@ function createImageEditorTab({ activate = true } = {}) {
   imageEditorTabList.push(tab);
   if (activate) switchImageEditorTab(tab.id);
   else renderImageEditorTabs();
+  revealCanvasTabEnd($("#imageEditorTabs"));
   return tab;
 }
 
@@ -343,11 +624,11 @@ function closeImageEditorTab(tabId) {
   renderImageEditorTabs();
 }
 
-function switchImageEditorTab(tabId) {
+function switchImageEditorTab(tabId, { renderTabs = true } = {}) {
   const target = imageEditorTabList.find(tab => tab.id === tabId);
   if (!target) return;
   if (target.id === activeImageEditorTabId) {
-    renderImageEditorTabs();
+    if (renderTabs) renderImageEditorTabs();
     return;
   }
   const previous = currentImageEditorTab();
@@ -358,7 +639,7 @@ function switchImageEditorTab(tabId) {
   }
   activeImageEditorTabId = target.id;
   imageEditorState = target.state;
-  renderImageEditorTabs();
+  if (renderTabs) renderImageEditorTabs();
   syncImageEditorTabView(target.id);
 }
 
@@ -396,33 +677,25 @@ function syncImageEditorTabView(tabId = activeImageEditorTabId) {
   });
 }
 
+// 拖拽排序：只调整标签顺序，激活标签跟着自己的 id 走，不改变当前画布。
+function moveImageEditorTab(from, to) {
+  if (from === to || from < 0 || to < 0 || from >= imageEditorTabList.length || to >= imageEditorTabList.length) return;
+  const [tab] = imageEditorTabList.splice(from, 1);
+  imageEditorTabList.splice(to, 0, tab);
+  renderImageEditorTabs();
+}
+
 function renderImageEditorTabs() {
   const wrap = $("#imageEditorTabs");
   const bar = $("#imageEditorTabBar");
   if (!wrap || !bar) return;
   bar.hidden = false;
-  wrap.innerHTML = "";
-  imageEditorTabList.forEach(tab => {
-    const tabButton = document.createElement("div");
-    tabButton.className = `bg-canvas-tab${tab.id === activeImageEditorTabId ? " active" : ""}`;
-    tabButton.dataset.imageEditorTabId = tab.id;
-    tabButton.setAttribute("role", "tab");
-    tabButton.setAttribute("aria-selected", tab.id === activeImageEditorTabId ? "true" : "false");
-    tabButton.setAttribute("aria-label", imageEditorTabTitle(tab));
-    tabButton.title = imageEditorTabTitle(tab);
-    const label = document.createElement("span");
-    label.className = "bg-canvas-tab-label";
-    label.textContent = imageEditorTabTitle(tab);
-    tabButton.appendChild(label);
-    const closeButton = document.createElement("button");
-    closeButton.type = "button";
-    closeButton.className = "bg-canvas-tab-close";
-    closeButton.dataset.imageEditorTabClose = tab.id;
-    closeButton.setAttribute("aria-label", `关闭 ${imageEditorTabTitle(tab)}`);
-    closeButton.textContent = "×";
-    tabButton.appendChild(closeButton);
-    wrap.appendChild(tabButton);
-  });
+  buildCanvasTabElements(
+    wrap,
+    imageEditorTabList.map(tab => ({ id: tab.id, title: imageEditorTabTitle(tab) })),
+    activeImageEditorTabId,
+    "imageEditorTabId"
+  );
 }
 
 function syncActiveImageEditorTabTitle() {
@@ -3914,7 +4187,7 @@ function blueBgKeyDown(event) {
 
 function blueBgFilename() {
   const baseName = (blueBgState.sourceName || "image").replace(/\.[^.]+$/, "");
-  return `${baseName}-小编工具箱.png`;
+  return `${baseName}-小编盒子.png`;
 }
 
 function blueBgTransparentExportBounds() {
@@ -4080,7 +4353,7 @@ async function sendBgToAnnotation() {
     assertBlueBgExportSourcesReadable();
     const blob = await canvasToPngBlob(composeBlueBgOutputCanvas());
     const baseName = (blueBgState.sourceName || "image").replace(/\.[^.]+$/, "");
-    const file = new File([blob], `${baseName}-小编工具箱.png`, { type: "image/png" });
+    const file = new File([blob], `${baseName}-小编盒子.png`, { type: "image/png" });
     showTab("annotation");
     loadAnnotationImage(file);
   } catch (error) {
@@ -11103,37 +11376,22 @@ function bind() {
     $("#bgFiles").click();
   };
   $("#bgAddTabButton").onclick = () => createBgTab();
-  $("#bgCanvasTabs").onclick = event => {
-    const closeButton = event.target.closest("[data-bg-tab-close]");
-    if (closeButton) {
-      event.stopPropagation();
-      closeBgTab(closeButton.dataset.bgTabClose);
-      return;
-    }
-    const tabButton = event.target.closest("[data-bg-tab-id]");
-    if (tabButton) switchBgTab(tabButton.dataset.bgTabId);
-  };
-  $("#bgCanvasTabs").onauxclick = event => {
-    if (event.button !== 1) return;
-    const tabButton = event.target.closest("[data-bg-tab-id]");
-    if (tabButton) closeBgTab(tabButton.dataset.bgTabId);
-  };
+  setupCanvasTabBar({
+    wrap: $("#bgCanvasTabs"),
+    dataKey: "bgTabId",
+    onSelect: (tabId, options) => switchBgTab(tabId, options),
+    onClose: tabId => closeBgTab(tabId),
+    onMove: (from, to) => moveBgTab(from, to),
+  });
   $("#imageEditorAddTabButton").onclick = () => createImageEditorTab();
-  $("#imageEditorTabs").onclick = event => {
-    const closeButton = event.target.closest("[data-image-editor-tab-close]");
-    if (closeButton) {
-      event.stopPropagation();
-      closeImageEditorTab(closeButton.dataset.imageEditorTabClose);
-      return;
-    }
-    const tabButton = event.target.closest("[data-image-editor-tab-id]");
-    if (tabButton) switchImageEditorTab(tabButton.dataset.imageEditorTabId);
-  };
-  $("#imageEditorTabs").onauxclick = event => {
-    if (event.button !== 1) return;
-    const tabButton = event.target.closest("[data-image-editor-tab-id]");
-    if (tabButton) closeImageEditorTab(tabButton.dataset.imageEditorTabId);
-  };
+  setupCanvasTabBar({
+    wrap: $("#imageEditorTabs"),
+    dataKey: "imageEditorTabId",
+    onSelect: (tabId, options) => switchImageEditorTab(tabId, options),
+    onClose: tabId => closeImageEditorTab(tabId),
+    onMove: (from, to) => moveImageEditorTab(from, to),
+  });
+  $("#canvasTabClose").onclick = closeCanvasTabFromMenu;
   $("#bgViewMode").onclick = openBgBackgroundDialog;
   $("#bgBackgroundButton").onclick = openBgImageStylePanel;
   $("#bgBackgroundFile").onchange = () => {
@@ -11592,11 +11850,19 @@ function bind() {
   document.addEventListener("pointerdown", event => {
     if (!event.target.closest("#blueBgContextMenu")) hideBlueBgContextMenu();
     if (!event.target.closest("#bgChoiceContextMenu")) hideBgChoiceContextMenu();
+    if (!event.target.closest("#canvasTabContextMenu")) hideCanvasTabContextMenu();
     if (!event.target.closest(".image-editor-more")) {
       $("#imageEditorMoreMenu").hidden = true;
       $("#imageEditorMoreButton").setAttribute("aria-expanded", "false");
     }
   });
+  // 菜单跟着指针出现，页面一动就会失准，这些情况下直接收起。
+  document.addEventListener("keydown", event => {
+    if (event.key !== "Escape") return;
+    if (!$("#canvasTabContextMenu").hidden) hideCanvasTabContextMenu();
+  });
+  document.addEventListener("scroll", hideCanvasTabContextMenu, true);
+  window.addEventListener("resize", hideCanvasTabContextMenu);
   document.addEventListener("wheel", event => {
     if (event.ctrlKey && !event.target.closest(".annotation-stage, .image-editor-stage, .blue-bg-stage")) {
       event.preventDefault();
