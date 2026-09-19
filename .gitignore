@@ -1,8 +1,9 @@
 # macOS 系统文件
 .DS_Store
 
-# 本地工作素材、设计稿与本机工具目录，不随项目发布
+# 本地工作素材、设计稿、本机工具目录与本地协作文档，不随项目发布
 参考资料/
 design-previews/
 .zcode/
 auto-tests/
+AGENTS.md
