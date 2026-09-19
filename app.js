@@ -144,7 +144,7 @@ function currentBgTab() {
 
 function bgTabTitle(tab) {
   const namedLayer = tab.canvas.layers.find(layer => layer.fileName)?.fileName;
-  return tab.canvas.sourceName || namedLayer || `画布 ${bgTabList.indexOf(tab) + 1}`;
+  return tab.canvas.sourceName || namedLayer || `画布 ${tab.seq}`;
 }
 
 function createBgTab({ activate = true } = {}) {
@@ -155,6 +155,8 @@ function createBgTab({ activate = true } = {}) {
   bgTabSequence += 1;
   const tab = {
     id: `bg-tab-${bgTabSequence}`,
+    // 编号在创建时定死：拖拽重排、关闭其他标签都不会让它改号。
+    seq: bgTabSequence,
     canvas: createBgCanvasState(),
     annotation: createAnnotationState("bg"),
     history: [],
@@ -589,7 +591,7 @@ function currentImageEditorTab() {
 }
 
 function imageEditorTabTitle(tab) {
-  return tab.state.sourceName || `画布 ${imageEditorTabList.indexOf(tab) + 1}`;
+  return tab.state.sourceName || `画布 ${tab.seq}`;
 }
 
 function createImageEditorTab({ activate = true } = {}) {
@@ -598,7 +600,7 @@ function createImageEditorTab({ activate = true } = {}) {
     return null;
   }
   imageEditorTabSequence += 1;
-  const tab = { id: `image-editor-tab-${imageEditorTabSequence}`, state: createImageEditorState() };
+  const tab = { id: `image-editor-tab-${imageEditorTabSequence}`, seq: imageEditorTabSequence, state: createImageEditorState() };
   imageEditorTabList.push(tab);
   if (activate) switchImageEditorTab(tab.id);
   else renderImageEditorTabs();
