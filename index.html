@@ -7,7 +7,7 @@
   <meta name="theme-color" content="#ffffff">
   <title>小编盒子</title>
   <link rel="icon" type="image/png" href="./assets/xiaobian-box-dragon-logo.png">
-  <link rel="stylesheet" href="./styles.css?v=20260919-canvas-tab-bar">
+  <link rel="stylesheet" href="./styles.css?v=20260925-selection-panel-integers">
 </head>
 <body>
   <nav class="tabs" aria-label="工具导航">
@@ -220,17 +220,26 @@
               <div id="blueBgStage" class="blue-bg-stage" tabindex="0" aria-label="美化 / 标注画布">
                 <canvas id="blueBgCanvas" width="2000" height="1083"></canvas>
                 <canvas id="bgAnnotationCanvas" class="bg-annotation-canvas" width="2000" height="1083" hidden></canvas>
+                <div id="bgMarqueeSelection" class="bg-marquee-selection" hidden aria-hidden="true"></div>
                 <div id="blueBgSelectionOverlay" class="image-editor-selection-overlay canvas-selection-overlay" hidden>
                   <i data-selection-handle="nw"></i>
+                  <i data-selection-handle="n"></i>
                   <i data-selection-handle="ne"></i>
+                  <i data-selection-handle="e"></i>
                   <i data-selection-handle="se"></i>
+                  <i data-selection-handle="s"></i>
                   <i data-selection-handle="sw"></i>
+                  <i data-selection-handle="w"></i>
                 </div>
                 <div id="bgAnnotationSelectionOverlay" class="image-editor-selection-overlay canvas-selection-overlay" hidden>
                   <i data-selection-handle="nw"></i>
+                  <i data-selection-handle="n"></i>
                   <i data-selection-handle="ne"></i>
+                  <i data-selection-handle="e"></i>
                   <i data-selection-handle="se"></i>
+                  <i data-selection-handle="s"></i>
                   <i data-selection-handle="sw"></i>
+                  <i data-selection-handle="w"></i>
                 </div>
               </div>
               <div id="blueBgContextMenu" class="blue-bg-context-menu" role="menu" hidden>
@@ -334,6 +343,7 @@
               <button id="bgChoiceRemove" class="context-danger" type="button" role="menuitem">移除</button>
             </div>
             <aside id="bgAnnotationInspector" class="bg-annotation-inspector" aria-label="标注效果调节" hidden>
+              <p id="bgAnnotationMultiSelectionHint" class="bg-annotation-multi-selection-hint" hidden>已选择多个标注，拖动可整体移动。</p>
               <div id="bgAnnotationMaskControls" class="bg-annotation-control" hidden>
                 <label class="bg-effect-switch-row"><input id="bgAnnotationMaskShadow" type="checkbox"> 阴影效果</label>
                 <label class="bg-effect-switch-row"><input id="bgAnnotationMaskRound" type="checkbox"> 圆角效果</label>
@@ -429,7 +439,7 @@
             </aside>
           </div>
           <div class="bg-mode-toolbar" role="toolbar" aria-label="美化 / 标注功能">
-            <button id="bgViewMode" type="button" aria-label="背景美化" title="背景美化 (V)"><span class="tool-symbol tool-symbol-move"></span><small>背景美化</small></button>
+            <button id="bgViewMode" type="button" aria-label="选择" title="选择 (V)"><span class="tool-symbol tool-symbol-move"></span><small>选择</small></button>
             <button id="bgBackgroundButton" type="button" aria-label="图片样式" title="图片样式 (B)" disabled><span class="tool-symbol tool-symbol-background"></span><small>图片样式</small></button>
             <button id="bgAddAnnotationNumber" type="button" aria-label="序号" title="序号 (N)" disabled><span class="tool-symbol tool-symbol-number"></span><small>序号</small></button>
             <button id="bgAddAnnotationMask" type="button" aria-label="遮挡" title="遮挡 (M)" disabled><span class="tool-symbol tool-symbol-mask"></span><small>遮挡</small></button>
@@ -496,9 +506,13 @@
             <canvas id="annotationCanvas"></canvas>
             <div id="annotationSelectionOverlay" class="image-editor-selection-overlay canvas-selection-overlay" hidden>
               <i data-selection-handle="nw"></i>
+              <i data-selection-handle="n"></i>
               <i data-selection-handle="ne"></i>
+              <i data-selection-handle="e"></i>
               <i data-selection-handle="se"></i>
+              <i data-selection-handle="s"></i>
               <i data-selection-handle="sw"></i>
+              <i data-selection-handle="w"></i>
             </div>
             <div id="annotationPlaceholder" class="annotation-placeholder">
               <button id="annotationEmptyImport" class="canvas-empty-import" type="button">导入图片</button>
@@ -518,11 +532,11 @@
             <button id="imageEditorCropMode" type="button" aria-label="画布裁切" title="画布裁切 (C)" disabled><span class="tool-symbol tool-symbol-crop"></span><small>裁切</small></button>
             <button id="imageEditorGradientMode" type="button" aria-label="渐变透明" title="渐变透明 (G)" disabled><span class="tool-symbol tool-symbol-gradient"></span><small>渐变</small></button>
             <button id="imageEditorScreenMode" type="button" aria-label="换屏" title="换屏 (H)" disabled><span class="tool-symbol tool-symbol-screen"></span><small>换屏</small></button>
-            <button id="imageEditorInpaintMode" type="button" aria-label="局部修复" title="局部修复 (E)" disabled><span class="tool-symbol tool-symbol-eraser"></span><small>修复</small></button>
             <button id="imageEditorCoverMode" type="button" aria-label="智能覆盖" title="智能覆盖" disabled><span class="tool-symbol tool-symbol-cover"></span><small>覆盖</small></button>
             <div class="image-editor-more">
               <button id="imageEditorMoreButton" type="button" aria-label="更多工具" title="更多工具" aria-expanded="false" disabled><span class="tool-symbol tool-symbol-more"></span><small>更多</small></button>
               <div id="imageEditorMoreMenu" class="image-editor-more-menu" hidden>
+                <button id="imageEditorInpaintMode" type="button" aria-label="局部修复" title="局部修复 (E)" disabled><span class="tool-symbol tool-symbol-eraser"></span><small>修复</small></button>
                 <button id="imageEditorSplitMode" type="button" aria-label="线条分隔" title="线条分隔 (S)" disabled><span class="tool-symbol tool-symbol-split"></span><small>分隔</small></button>
                 <button id="imageEditorBlendMode" type="button" aria-label="图片融合" title="图片融合 (B)" disabled><span class="tool-symbol tool-symbol-blend"></span><small>融合</small></button>
                 <button id="imageEditorWindowMode" type="button" aria-label="窗口提取" title="窗口提取 (W)" disabled><span class="tool-symbol tool-symbol-window"></span><small>窗口</small></button>
@@ -576,7 +590,7 @@
               </select>
             </label>
             <label class="bg-effect-switch-row"><input id="imageEditorScreenNotch" type="checkbox" checked> 保留屏幕刘海</label>
-            <label class="bg-effect-switch-row"><input id="imageEditorScreenSnap" type="checkbox" checked> 松手自动吸附边缘</label>
+            <label class="bg-effect-switch-row"><input id="imageEditorScreenSnap" type="checkbox"> 松手自动吸附边缘</label>
             <label class="bg-effect-switch-row"><input id="imageEditorScreenHideOverlay" type="checkbox"> 隐藏角点与选框</label>
             <label class="bg-effect-switch-row"><input id="imageEditorScreenHideShot" type="checkbox"> 隐藏贴图只看原图</label>
             <div class="image-editor-screen-actions">
@@ -587,7 +601,7 @@
           <div id="imageEditorInpaintControls" class="image-editor-composite-controls" hidden>
             <label>修复半径 <strong id="imageEditorInpaintSizeValue">40 px</strong></label>
             <input id="imageEditorInpaintSize" type="range" min="10" max="200" step="1" value="40">
-            <p class="image-editor-inspector-note">在画布上按住拖动，圆形区域内的内容会被周围像素自动填充修复。</p>
+            <p class="image-editor-inspector-note">在画布上按住涂抹要修复的内容（红色遮罩只做标记，不改动原图）；涂抹要完全盖住目标并稍大一圈，松手后整块一次性重建并与周边羽化融合。半径可在下方调节。</p>
           </div>
           <div id="imageEditorCoverControls" class="image-editor-composite-controls" hidden>
             <label>覆盖形状</label>
@@ -606,6 +620,10 @@
         <div id="imageEditorStage" class="image-editor-stage" tabindex="0" aria-label="高级编辑画布">
           <canvas id="imageEditorCanvas"></canvas>
           <div id="imageEditorSelectionOverlay" class="image-editor-selection-overlay" hidden>
+            <svg class="image-editor-selection-ants" aria-hidden="true" focusable="false">
+              <rect class="ants-light"></rect>
+              <rect class="ants-dark"></rect>
+            </svg>
             <i data-selection-handle="nw"></i>
             <i data-selection-handle="n"></i>
             <i data-selection-handle="ne"></i>
@@ -639,6 +657,7 @@
           <div id="imageEditorScreenMagnifier" class="image-editor-screen-magnifier" hidden>
             <canvas width="170" height="170"></canvas>
           </div>
+          <div id="imageEditorWindowPreview" class="image-editor-window-preview" hidden></div>
           <div id="imageEditorSnapGuides" class="image-editor-snap-guides" hidden></div>
           <div id="imageEditorPlaceholder" class="annotation-placeholder">
             <button id="imageEditorEmptyImport" class="canvas-empty-import" type="button">导入图片</button>
@@ -764,6 +783,6 @@
     <button id="canvasTabClose" type="button" role="menuitem">关闭标签页</button>
   </div>
 
-  <script src="./app.js?v=20260919-tab-seq"></script>
+  <script src="./app.js?v=20260925-selection-panel-integers"></script>
 </body>
 </html>
